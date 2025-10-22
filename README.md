@@ -75,3 +75,7 @@
 ## 许可证 (License)
 
 本项目采用 [MIT License](LICENSE) 授权。
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)](https://www.star-history.com/#cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)

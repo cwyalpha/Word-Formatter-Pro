@@ -58,7 +58,7 @@
 
 5.  **运行程序**：
     ```bash
-    python Word文档智能排版工具.py 
+    python wfp.py 
     ```
 
 ## 操作流程

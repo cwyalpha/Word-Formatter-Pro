@@ -84,7 +84,7 @@
 
 ## 版本更新记录
 
-### v2.5.8 (最新版本)
+### v2.5.8
 
 *   **新增 拖拽功能**：支持从文件管理器将单个或多个文件、文件夹直接拖拽到文件列表框中，简化了文件添加流程。
 *   **优化 图片/附件段落处理**：重构了对包含图片、图形或附件的段落的处理逻辑。现在，程序会为这些段落中的文字应用正确的标题或正文格式（字体、字号），同时保留段落原有的对齐和缩进等布局，确保图文格式的统一性。
@@ -104,3 +104,4 @@
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)](https://www.star-history.com/#cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)
+

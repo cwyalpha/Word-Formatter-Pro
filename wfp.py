@@ -19,6 +19,10 @@ from docx.oxml.text.paragraph import CT_P
 from docx.table import Table, _Cell
 from docx.text.paragraph import Paragraph
 
+# --- NEW: Import for Drag-and-Drop functionality ---
+# Make sure to install it first: pip install tkinterdnd2-tk
+from tkinterdnd2 import DND_FILES, TkinterDnD
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class WordProcessor:
@@ -353,13 +357,36 @@ class WordProcessor:
             if not para.text.strip(): 
                 self._log(f"段落 {current_block_num}: 空白 - 跳过"); block_idx += 1; continue
             
+            # --- MODIFICATION START: Handle paragraphs with images/objects ---
             is_pic = '<w:drawing>' in para._p.xml or '<w:pict>' in para._p.xml
             is_embedded_obj = '<w:object>' in para._p.xml
             if is_pic or is_embedded_obj:
                 log_msg = "图片" if is_pic else "附件"
-                self._log(f"段落 {current_block_num}: {log_msg} - 保留原格式")
-                if is_embedded_obj: self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
-                block_idx += 1; continue
+                self._log(f"段落 {current_block_num}: {log_msg} - 仅格式化文字")
+                
+                text_to_check = para.text.lstrip()
+                para_text_preview = text_to_check[:30].replace("\n", " ")
+
+                # Apply font formatting based on heading or body rules, but leave other properties (indent, spacing) alone.
+                if re_h1.match(text_to_check):
+                    self._log(f"  > 文字识别为一级标题: \"{para_text_preview}...\"")
+                    self._apply_font_to_runs(para, self.config['h1_font'], self.config['h1_size'], set_color=apply_color)
+                elif re_h2.match(text_to_check):
+                    self._log(f"  > 文字识别为二级标题: \"{para_text_preview}...\"")
+                    self._apply_font_to_runs(para, self.config['h2_font'], self.config['h2_size'], set_color=apply_color)
+                elif re_h3.match(text_to_check):
+                    self._log(f"  > 文字识别为三级标题: \"{para_text_preview}...\"")
+                    self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
+                elif re_h4.match(text_to_check):
+                    self._log(f"  > 文字识别为四级标题: \"{para_text_preview}...\"")
+                    self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
+                elif text_to_check: # Only format if there is text
+                    self._log(f"  > 文字识别为正文: \"{para_text_preview}...\"")
+                    self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
+
+                block_idx += 1
+                continue
+            # --- MODIFICATION END ---
 
             original_text, text_to_check = para.text, para.text.lstrip()
             leading_space_count = len(original_text) - len(text_to_check)
@@ -500,7 +527,7 @@ class WordProcessor:
 class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
-        master.title("Word文档智能排版工具 v2.5.7 (宽屏优化版)")
+        master.title("Word文档智能排版工具 v2.5.8 (拖拽支持版)")
         # --- MODIFICATION: Adjusted window geometry for widescreen displays ---
         master.geometry("900x780")
 
@@ -551,13 +578,21 @@ class WordFormatterGUI:
         self.notebook = notebook
 
         file_tab = ttk.Frame(notebook); notebook.add(file_tab, text=' 文件批量处理 ')
-        list_frame = ttk.LabelFrame(file_tab, text="待处理文件列表")
+        list_frame = ttk.LabelFrame(file_tab, text="待处理文件列表（可拖拽文件或文件夹）")
         list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
         # --- MODIFICATION: Set a shorter default height for the listbox ---
         self.file_listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, selectmode=tk.EXTENDED, height=8)
         scrollbar.config(command=self.file_listbox.yview); scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # --- NEW (DND): Register the listbox as a drop target ---
+        self.file_listbox.drop_target_register(DND_FILES)
+        self.file_listbox.dnd_bind('<<Drop>>', self.handle_drop)
+
+        # --- NEW (Placeholder): Create a label to show as a placeholder ---
+        self.placeholder_label = ttk.Label(self.file_listbox, text="可以拖拽文件或文件夹到这里", foreground="grey")
+        # The _update_listbox_placeholder function will manage its visibility
         
         # --- MODIFIED: Added "Remove File" button ---
         file_button_frame = ttk.Frame(file_tab); file_button_frame.pack(fill=tk.X, pady=5)
@@ -604,6 +639,9 @@ class WordFormatterGUI:
 
         style = ttk.Style(); style.configure('Success.TButton', font=('Helvetica', 10, 'bold'), foreground='green')
         ttk.Button(main_frame, text="开始排版", style='Success.TButton', command=self.start_processing).pack(fill=tk.X, ipady=5)
+
+        # --- NEW (Placeholder): Set the initial state of the placeholder ---
+        self._update_listbox_placeholder()
 
     def log_to_debug_window(self, message):
         self.master.update_idletasks(); self.debug_text.config(state='normal'); self.debug_text.insert(tk.END, message + '\n'); self.debug_text.config(state='disabled'); self.debug_text.see(tk.END)
@@ -694,35 +732,59 @@ class WordFormatterGUI:
                 messagebox.showinfo("成功", "配置已加载")
             except Exception as e:
                 messagebox.showerror("错误", f"加载配置文件失败: {e}")
-            
-    def add_files(self):
-        # --- MODIFIED: Prevent duplicate files ---
+
+    # --- NEW (Placeholder): Manages the visibility of the placeholder label ---
+    def _update_listbox_placeholder(self):
+        if self.file_listbox.size() == 0:
+            self.placeholder_label.place(in_=self.file_listbox, relx=0.5, rely=0.5, anchor=tk.CENTER)
+        else:
+            self.placeholder_label.place_forget()
+
+    # --- NEW (DND): Handles the drop event ---
+    def handle_drop(self, event):
+        # The event.data is a string containing file paths, possibly with braces {}
+        # We use tk's splitlist to properly parse it into a list of paths
+        paths = self.master.tk.splitlist(event.data)
+        self._add_paths_to_listbox(paths)
+
+    # --- NEW (Refactored): Central logic for adding paths from any source ---
+    def _add_paths_to_listbox(self, paths):
         current_files = set(self.file_listbox.get(0, tk.END))
-        files = filedialog.askopenfilenames(filetypes=[("所有支持的文件", "*.docx;*.doc;*.wps;*.txt"), ("Word 文档", "*.docx;*.doc"), ("WPS 文档", "*.wps"), ("纯文本", "*.txt")])
         added_count = 0
-        for f in files:
-            if f not in current_files:
-                self.file_listbox.insert(tk.END, f)
-                current_files.add(f)
-                added_count += 1
-        if len(files) > 0:
-            self.log_to_debug_window(f"添加了 {added_count} 个新文件。忽略了 {len(files) - added_count} 个重复文件。")
+        
+        for path in paths:
+            if os.path.isdir(path):
+                # It's a folder, walk through it
+                for root, _, files in os.walk(path):
+                    for f in files:
+                        if f.lower().endswith(('.docx', '.doc', '.wps', '.txt')):
+                            full_path = os.path.join(root, f)
+                            if full_path not in current_files:
+                                self.file_listbox.insert(tk.END, full_path)
+                                current_files.add(full_path)
+                                added_count += 1
+            elif os.path.isfile(path):
+                # It's a file
+                if path.lower().endswith(('.docx', '.doc', '.wps', '.txt')):
+                    if path not in current_files:
+                        self.file_listbox.insert(tk.END, path)
+                        current_files.add(path)
+                        added_count += 1
+        
+        if added_count > 0:
+            self.log_to_debug_window(f"通过按钮或拖拽添加了 {added_count} 个新文件。")
+        
+        self._update_listbox_placeholder()
+
+    def add_files(self):
+        files = filedialog.askopenfilenames(filetypes=[("所有支持的文件", "*.docx;*.doc;*.wps;*.txt"), ("Word 文档", "*.docx;*.doc"), ("WPS 文档", "*.wps"), ("纯文本", "*.txt")])
+        if files:
+            self._add_paths_to_listbox(files)
         
     def add_folder(self):
         folder = filedialog.askdirectory()
         if folder:
-            # --- MODIFIED: Prevent duplicate files ---
-            current_files = set(self.file_listbox.get(0, tk.END))
-            initial_count = len(current_files)
-            for root, _, files in os.walk(folder):
-                for f in files:
-                    if f.lower().endswith(('.docx', '.doc', '.wps', '.txt')):
-                        full_path = os.path.join(root, f)
-                        if full_path not in current_files:
-                            self.file_listbox.insert(tk.END, full_path)
-                            current_files.add(full_path)
-            added_count = len(current_files) - initial_count
-            self.log_to_debug_window(f"从文件夹添加了 {added_count} 个新文件。")
+            self._add_paths_to_listbox([folder]) # Pass the single folder path in a list
 
     # --- NEW: Method to remove selected files from the listbox ---
     def remove_files(self):
@@ -733,15 +795,18 @@ class WordFormatterGUI:
         # Iterate over indices in reverse order to avoid shifting list items
         for index in sorted(selected_indices, reverse=True):
             self.file_listbox.delete(index)
+        self._update_listbox_placeholder() # Update placeholder after removing
 
-    def clear_list(self): self.file_listbox.delete(0, tk.END)
+    def clear_list(self): 
+        self.file_listbox.delete(0, tk.END)
+        self._update_listbox_placeholder() # Update placeholder after clearing
 
     def show_help_window(self):
         help_win = tk.Toplevel(self.master); help_win.title("使用说明"); help_win.geometry("600x500")
         help_text_widget = scrolledtext.ScrolledText(help_win, wrap=tk.WORD, state='disabled')
         help_text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         help_content = """
-Word文档智能排版工具 v2.5.7 - 使用说明
+Word文档智能排版工具 v2.5.8 - 使用说明
 
 本工具旨在提供一键式的专业文档排版体验，支持批量处理和高度自定义。
 
@@ -749,6 +814,7 @@ Word文档智能排版工具 v2.5.7 - 使用说明
 软件提供两种输入模式，通过主界面的选项卡切换：
 1. 文件批量处理：
    - 添加文件/文件夹：批量添加待处理的文档。
+   - 【新】拖拽支持：可以直接从文件管理器将文件或文件夹拖拽到文件列表中。
    - 支持格式：.docx, .doc, .wps, .txt。其中 .doc, .wps, .txt 会在后台自动转换为 .docx 进行处理（需安装WPS或Office）。
 2. 直接输入文本：
    - 直接在文本框中撰写或粘贴内容，程序会将其作为 .txt 内容处理。
@@ -860,6 +926,7 @@ Word文档智能排版工具 v2.5.7 - 使用说明
             processor.quit_com_app()
 
 if __name__ == "__main__":
-    root = tk.Tk()
+    # --- MODIFIED: Use TkinterDnD.Tk() instead of tk.Tk() to enable drag-and-drop ---
+    root = TkinterDnD.Tk()
     app = WordFormatterGUI(root)
     root.mainloop()

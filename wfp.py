@@ -528,8 +528,8 @@ class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
         master.title("Word文档智能排版工具 v2.5.8 (拖拽支持版)")
-        # --- MODIFICATION: Adjusted window geometry for widescreen displays ---
-        master.geometry("900x780")
+        # --- レイアウト修正: よりワイドなレイアウトに適したサイズに変更 ---
+        master.geometry("1200x750")
 
         self.font_size_map = {
             '一号 (26pt)': 26, '小一 (24pt)': 24, '二号 (22pt)': 22, '小二 (18pt)': 18,
@@ -557,12 +557,10 @@ class WordFormatterGUI:
         self.set_outline_var = tk.BooleanVar(value=self.default_params['set_outline'])
         self.entries = {}
         
-        # --- NEW: Path for default config file ---
         self.default_config_path = "default_config.json"
         
         self.create_menu()
         self.create_widgets()
-        # --- MODIFIED: Load initial config from file or use hardcoded defaults ---
         self.load_initial_config()
 
     def create_menu(self):
@@ -573,42 +571,51 @@ class WordFormatterGUI:
         self.master.config(menu=menubar)
 
     def create_widgets(self):
-        main_frame = ttk.Frame(self.master, padding="10"); main_frame.pack(fill=tk.BOTH, expand=True)
-        notebook = ttk.Notebook(main_frame); notebook.pack(fill=tk.X, expand=True, pady=5)
+        # --- レイアウトリファクタリング: 水平分割ウィンドウをメインレイアウトとして使用 ---
+        main_pane = ttk.PanedWindow(self.master, orient=tk.HORIZONTAL)
+        main_pane.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # --- 左ペイン: ファイルリストとテキスト入力 ---
+        left_frame = ttk.Frame(main_pane, padding=5)
+        main_pane.add(left_frame, weight=1)
+
+        notebook = ttk.Notebook(left_frame)
+        notebook.pack(fill=tk.BOTH, expand=True)
         self.notebook = notebook
 
         file_tab = ttk.Frame(notebook); notebook.add(file_tab, text=' 文件批量处理 ')
         list_frame = ttk.LabelFrame(file_tab, text="待处理文件列表（可拖拽文件或文件夹）")
-        list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
-        # --- MODIFICATION: Set a shorter default height for the listbox ---
-        self.file_listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, selectmode=tk.EXTENDED, height=8)
-        scrollbar.config(command=self.file_listbox.yview); scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.file_listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, selectmode=tk.EXTENDED)
+        scrollbar.config(command=self.file_listbox.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
-        # --- NEW (DND): Register the listbox as a drop target ---
         self.file_listbox.drop_target_register(DND_FILES)
         self.file_listbox.dnd_bind('<<Drop>>', self.handle_drop)
-
-        # --- NEW (Placeholder): Create a label to show as a placeholder ---
         self.placeholder_label = ttk.Label(self.file_listbox, text="可以拖拽文件或文件夹到这里", foreground="grey")
-        # The _update_listbox_placeholder function will manage its visibility
         
-        # --- MODIFIED: Added "Remove File" button ---
-        file_button_frame = ttk.Frame(file_tab); file_button_frame.pack(fill=tk.X, pady=5)
-        ttk.Button(file_button_frame, text="添加文件", command=self.add_files).pack(side=tk.LEFT, expand=True)
-        ttk.Button(file_button_frame, text="添加文件夹", command=self.add_folder).pack(side=tk.LEFT, expand=True)
-        ttk.Button(file_button_frame, text="移除文件", command=self.remove_files).pack(side=tk.LEFT, expand=True)
-        ttk.Button(file_button_frame, text="清空列表", command=self.clear_list).pack(side=tk.LEFT, expand=True)
+        file_button_frame = ttk.Frame(file_tab)
+        file_button_frame.pack(fill=tk.X, pady=5)
+        ttk.Button(file_button_frame, text="添加文件", command=self.add_files).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(file_button_frame, text="添加文件夹", command=self.add_folder).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(file_button_frame, text="移除文件", command=self.remove_files).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(file_button_frame, text="清空列表", command=self.clear_list).pack(side=tk.LEFT, expand=True, fill=tk.X)
 
         text_tab = ttk.Frame(notebook); notebook.add(text_tab, text=' 直接输入文本 ')
         text_frame = ttk.LabelFrame(text_tab, text="在此处输入或粘贴文本")
-        text_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        # --- MODIFICATION: Set a shorter default height for the text input area ---
-        self.direct_text_input = scrolledtext.ScrolledText(text_frame, height=8, wrap=tk.WORD)
+        text_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        self.direct_text_input = scrolledtext.ScrolledText(text_frame, height=10, wrap=tk.WORD)
         self.direct_text_input.pack(fill=tk.BOTH, expand=True)
 
-        params_frame = ttk.LabelFrame(main_frame, text="参数设置"); params_frame.pack(fill=tk.X, expand=True, pady=5)
+        # --- 右ペイン: パラメータ、ログ、アクションボタン ---
+        right_frame = ttk.Frame(main_pane, padding=5)
+        main_pane.add(right_frame, weight=2)
+
+        params_frame = ttk.LabelFrame(right_frame, text="参数设置")
+        params_frame.pack(fill=tk.X, pady=(0, 5))
         params_frame.columnconfigure(1, weight=1); params_frame.columnconfigure(3, weight=1); params_frame.columnconfigure(5, weight=1)
         
         def create_entry(label, var_name, r, c): ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2); entry = ttk.Entry(params_frame); entry.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2); self.entries[var_name] = entry
@@ -626,27 +633,27 @@ class WordFormatterGUI:
         create_entry("左边距(cm)", 'margin_left', row, 0); create_entry("右边距(cm)", 'margin_right', row, 2); row+=1
         ttk.Checkbutton(params_frame, text="自动设置大纲级别 (对TXT源文件无效)", variable=self.set_outline_var).grid(row=row, columnspan=6, pady=5); row+=1
         
-        log_frame = ttk.LabelFrame(main_frame, text="调试日志"); log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
-        # --- MODIFICATION: Set a shorter default height for the log window ---
-        self.debug_text = scrolledtext.ScrolledText(log_frame, height=8, state='disabled', wrap=tk.WORD); self.debug_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        log_frame = ttk.LabelFrame(right_frame, text="调试日志")
+        log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        self.debug_text = scrolledtext.ScrolledText(log_frame, height=8, state='disabled', wrap=tk.WORD)
+        self.debug_text.pack(fill=tk.BOTH, expand=True)
         
-        # --- MODIFIED: Added "Save as Default" and renamed "Restore Default" ---
-        button_frame = ttk.Frame(main_frame); button_frame.pack(fill=tk.X, expand=True, pady=10)
-        ttk.Button(button_frame, text="加载配置", command=self.load_config).pack(side=tk.LEFT, expand=True)
-        ttk.Button(button_frame, text="保存配置", command=self.save_config).pack(side=tk.LEFT, expand=True)
-        ttk.Button(button_frame, text="保存为默认", command=self.save_default_config).pack(side=tk.LEFT, expand=True)
-        ttk.Button(button_frame, text="恢复内置默认", command=self.load_defaults).pack(side=tk.LEFT, expand=True)
+        button_frame = ttk.Frame(right_frame)
+        button_frame.pack(fill=tk.X, pady=5)
+        ttk.Button(button_frame, text="加载配置", command=self.load_config).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(button_frame, text="保存配置", command=self.save_config).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(button_frame, text="保存为默认", command=self.save_default_config).pack(side=tk.LEFT, expand=True, fill=tk.X)
+        ttk.Button(button_frame, text="恢复内置默认", command=self.load_defaults).pack(side=tk.LEFT, expand=True, fill=tk.X)
 
         style = ttk.Style(); style.configure('Success.TButton', font=('Helvetica', 10, 'bold'), foreground='green')
-        ttk.Button(main_frame, text="开始排版", style='Success.TButton', command=self.start_processing).pack(fill=tk.X, ipady=5)
+        ttk.Button(right_frame, text="开始排版", style='Success.TButton', command=self.start_processing).pack(fill=tk.X, ipady=8, pady=5)
 
-        # --- NEW (Placeholder): Set the initial state of the placeholder ---
         self._update_listbox_placeholder()
+
 
     def log_to_debug_window(self, message):
         self.master.update_idletasks(); self.debug_text.config(state='normal'); self.debug_text.insert(tk.END, message + '\n'); self.debug_text.config(state='disabled'); self.debug_text.see(tk.END)
     
-    # --- NEW: Load default config from file on startup ---
     def load_initial_config(self):
         if os.path.exists(self.default_config_path):
             try:
@@ -656,12 +663,11 @@ class WordFormatterGUI:
                 self.log_to_debug_window(f"已加载默认配置文件: {self.default_config_path}")
             except Exception as e:
                 self.log_to_debug_window(f"加载默认配置 '{self.default_config_path}' 失败: {e}。将使用内置默认值。")
-                self.load_defaults() # Fallback to hardcoded defaults on error
+                self.load_defaults()
         else:
             self.log_to_debug_window("未找到默认配置文件，将使用内置默认值。")
             self.load_defaults()
 
-    # --- NEW: Helper function to apply a configuration dict to the UI ---
     def _apply_config(self, loaded_config):
         self.set_outline_var.set(loaded_config.get('set_outline', True))
         for key, value in loaded_config.items():
@@ -712,7 +718,6 @@ class WordFormatterGUI:
             with open(file_path, 'w', encoding='utf-8') as f: json.dump(self.collect_config(), f, ensure_ascii=False, indent=4)
             messagebox.showinfo("成功", f"配置已保存至 {file_path}")
     
-    # --- NEW: Save current settings as the default configuration ---
     def save_default_config(self):
         try:
             with open(self.default_config_path, 'w', encoding='utf-8') as f:
@@ -724,7 +729,6 @@ class WordFormatterGUI:
     def load_config(self):
         file_path = filedialog.askopenfilename(filetypes=[("JSON files", "*.json")])
         if file_path:
-            # --- MODIFIED: Use the new helper function ---
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
                     loaded_config = json.load(f)
@@ -733,28 +737,22 @@ class WordFormatterGUI:
             except Exception as e:
                 messagebox.showerror("错误", f"加载配置文件失败: {e}")
 
-    # --- NEW (Placeholder): Manages the visibility of the placeholder label ---
     def _update_listbox_placeholder(self):
         if self.file_listbox.size() == 0:
             self.placeholder_label.place(in_=self.file_listbox, relx=0.5, rely=0.5, anchor=tk.CENTER)
         else:
             self.placeholder_label.place_forget()
 
-    # --- NEW (DND): Handles the drop event ---
     def handle_drop(self, event):
-        # The event.data is a string containing file paths, possibly with braces {}
-        # We use tk's splitlist to properly parse it into a list of paths
         paths = self.master.tk.splitlist(event.data)
         self._add_paths_to_listbox(paths)
 
-    # --- NEW (Refactored): Central logic for adding paths from any source ---
     def _add_paths_to_listbox(self, paths):
         current_files = set(self.file_listbox.get(0, tk.END))
         added_count = 0
         
         for path in paths:
             if os.path.isdir(path):
-                # It's a folder, walk through it
                 for root, _, files in os.walk(path):
                     for f in files:
                         if f.lower().endswith(('.docx', '.doc', '.wps', '.txt')):
@@ -764,7 +762,6 @@ class WordFormatterGUI:
                                 current_files.add(full_path)
                                 added_count += 1
             elif os.path.isfile(path):
-                # It's a file
                 if path.lower().endswith(('.docx', '.doc', '.wps', '.txt')):
                     if path not in current_files:
                         self.file_listbox.insert(tk.END, path)
@@ -784,22 +781,20 @@ class WordFormatterGUI:
     def add_folder(self):
         folder = filedialog.askdirectory()
         if folder:
-            self._add_paths_to_listbox([folder]) # Pass the single folder path in a list
+            self._add_paths_to_listbox([folder])
 
-    # --- NEW: Method to remove selected files from the listbox ---
     def remove_files(self):
         selected_indices = self.file_listbox.curselection()
         if not selected_indices:
             messagebox.showinfo("提示", "请先在列表中选择要移除的文件。")
             return
-        # Iterate over indices in reverse order to avoid shifting list items
         for index in sorted(selected_indices, reverse=True):
             self.file_listbox.delete(index)
-        self._update_listbox_placeholder() # Update placeholder after removing
+        self._update_listbox_placeholder()
 
     def clear_list(self): 
         self.file_listbox.delete(0, tk.END)
-        self._update_listbox_placeholder() # Update placeholder after clearing
+        self._update_listbox_placeholder()
 
     def show_help_window(self):
         help_win = tk.Toplevel(self.master); help_win.title("使用说明"); help_win.geometry("600x500")
@@ -846,7 +841,6 @@ Word文档智能排版工具 v2.5.8 - 使用说明
         help_text_widget.config(state='disabled')
 
     def start_processing(self):
-        # --- MODIFICATION: Added pre-run warning message ---
         warning_title = "处理前重要提示"
         warning_message = (
             "为了防止数据丢失，请在继续前关闭所有已打开的Word和WPS文档（包括wps、表格、PPT等所有文档）。\n\n"
@@ -863,7 +857,6 @@ Word文档智能排版工具 v2.5.8 - 使用说明
         active_tab_index = self.notebook.index(self.notebook.select())
 
         try:
-            # --- Mode 1: Batch File Processing ---
             if active_tab_index == 0:
                 file_list = self.file_listbox.get(0, tk.END)
                 if not file_list:
@@ -892,7 +885,6 @@ Word文档智能排版工具 v2.5.8 - 使用说明
                 messagebox.showinfo("完成", summary_message)
                 self.log_to_debug_window(f"\n🎉 {summary_message}")
 
-            # --- Mode 2: Direct Text Input ---
             elif active_tab_index == 1:
                 text_content = self.direct_text_input.get('1.0', tk.END).strip()
                 if not text_content:
@@ -922,11 +914,9 @@ Word文档智能排版工具 v2.5.8 - 使用说明
             self.log_to_debug_window(f"\n❌ 处理过程中发生严重错误：\n{e}")
             messagebox.showerror("错误", f"处理过程中发生错误：\n{e}")
         finally:
-            # --- MODIFICATION: Quit the COM app after all operations are done ---
             processor.quit_com_app()
 
 if __name__ == "__main__":
-    # --- MODIFIED: Use TkinterDnD.Tk() instead of tk.Tk() to enable drag-and-drop ---
     root = TkinterDnD.Tk()
     app = WordFormatterGUI(root)
     root.mainloop()

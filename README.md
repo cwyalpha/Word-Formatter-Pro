@@ -84,6 +84,10 @@
 
 ## 版本更新记录
 
+### v2.5.9
+
+*   **优化 UI界面**：调整了窗口布局和组件尺寸，更适应宽屏显示器。
+
 ### v2.5.8
 
 *   **新增 拖拽功能**：支持从文件管理器将单个或多个文件、文件夹直接拖拽到文件列表框中，简化了文件添加流程。
@@ -94,7 +98,7 @@
 
 *   **新增 二级标题段内智能拆分**：当二级标题与正文在同一个段落时，能够自动为标题和正文部分应用不同格式，而无需手动拆分段落。
 *   **新增 配置方案管理**：增加了“保存为默认配置”功能，用户可以将当前设置保存，软件下次启动时将自动加载。
-*   **优化 UI界面**：调整了窗口布局和组件尺寸，更适应宽屏显示器，并增加了“移除文件”按钮和处理前的重要安全提示。
+*   **优化 UI界面**：增加了“移除文件”按钮和处理前的重要安全提示。
 
 
 ## 许可证 (License)
@@ -104,4 +108,5 @@
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)](https://www.star-history.com/#cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)
+
 

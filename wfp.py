@@ -527,8 +527,7 @@ class WordProcessor:
 class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
-        master.title("Word文档智能排版工具 v2.5.8 (拖拽支持版)")
-        # --- レイアウト修正: よりワイドなレイアウトに適したサイズに変更 ---
+        master.title("Word文档智能排版工具 v2.5.9")
         master.geometry("1200x750")
 
         self.font_size_map = {
@@ -571,11 +570,9 @@ class WordFormatterGUI:
         self.master.config(menu=menubar)
 
     def create_widgets(self):
-        # --- レイアウトリファクタリング: 水平分割ウィンドウをメインレイアウトとして使用 ---
         main_pane = ttk.PanedWindow(self.master, orient=tk.HORIZONTAL)
         main_pane.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        # --- 左ペイン: ファイルリストとテキスト入力 ---
         left_frame = ttk.Frame(main_pane, padding=5)
         main_pane.add(left_frame, weight=1)
 
@@ -610,7 +607,6 @@ class WordFormatterGUI:
         self.direct_text_input = scrolledtext.ScrolledText(text_frame, height=10, wrap=tk.WORD)
         self.direct_text_input.pack(fill=tk.BOTH, expand=True)
 
-        # --- 右ペイン: パラメータ、ログ、アクションボタン ---
         right_frame = ttk.Frame(main_pane, padding=5)
         main_pane.add(right_frame, weight=2)
 
@@ -801,7 +797,7 @@ class WordFormatterGUI:
         help_text_widget = scrolledtext.ScrolledText(help_win, wrap=tk.WORD, state='disabled')
         help_text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         help_content = """
-Word文档智能排版工具 v2.5.8 - 使用说明
+Word文档智能排版工具 v2.5.9 - 使用说明
 
 本工具旨在提供一键式的专业文档排版体验，支持批量处理和高度自定义。
 

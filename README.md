@@ -42,7 +42,7 @@
 ### 方式一：直接运行程序 (推荐)
 
 1.  **环境依赖**：确保电脑上已安装 **Microsoft Office** 或 **WPS Office**。
-2.  **下载**：访问项目的 [Releases](https://github.com/cwyalpha/Word-Formatter-Pro/releases) 页面，下载最新的 `.exe` 可执行文件。
+2.  **下载**：访问项目的 [Github Releases](https://github.com/cwyalpha/Word-Formatter-Pro/releases) 或 [Gitee Releases](https://gitee.com/cwyalpha/Word-Formatter-Pro/releases) 页面，下载最新的 `.exe` 可执行文件。
 3.  **运行**：双击 `.exe` 文件即可，无需安装。
 
 ### 方式二：从源码运行

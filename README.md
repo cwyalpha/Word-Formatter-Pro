@@ -82,6 +82,29 @@
 5.  **选择输出位置**：根据提示选择处理后文件的保存位置。
 6.  **完成**：处理完毕后会弹出成功提示。
 
+## 常见问题 (FAQ)
+
+**Q1：为什么排版后的字体显示不正确，或者不是公文标准字体（如方正小标宋）？**
+
+A：这是因为您的电脑中缺少公文规范所要求的字体文件（例如：方正小标宋、方正仿宋_GBK 等）。出于版权原因，本工具无法捆绑这些字体。请您自行从正规渠道获取并安装这些字体至您的 Windows 系统字体文件夹中，完成后再重新运行本工具即可。
+
+**Q2：我使用的是 32 位 Windows 系统，为什么无法运行 .exe 文件？**
+
+A：本项目在 Releases 页面提供的 `.exe` 可执行文件是为 **64 位 (x64) Windows 7 及以上系统** 打包的。32 位系统无法直接运行。
+
+**Q3：我使用的是 32 位系统或国产操作系统（如 UOS、Kylin），如何使用本工具？**
+
+A：对于 32 位 Windows 系统或基于 Linux 的国产操作系统，您无法直接运行 `.exe` 文件。您需要参照上文 “方式二：从源码运行” 的指引，在您的系统上配置 Python 环境，并手动安装 `requirements.txt` 中的依赖库来运行。对于国产操作系统，还需确保已安装适配的 WPS Office 版本。
+
+**Q4：点击“开始排版”后程序报错、卡住或无响应？**
+
+A：请务必确认您的电脑已正确安装 **Microsoft Office** 或 **WPS Office**。本工具依赖于它们的 COM 接口进行 Word 文档的读写和转换。如果未安装，程序将无法工作。
+
+**Q5：下载的 .exe 文件被杀毒软件报毒？**
+
+A：本程序使用 PyInstaller 打包为 `.exe`，部分杀毒软件可能会对非签名的可执行文件产生误报。本工具代码开源，不含任何恶意代码，请放心使用。您可以将其添加到杀毒软件的白名单中，或通过“从源码运行”的方式使用。
+
+
 ## 版本更新记录
 
 ### v2.5.9
@@ -108,5 +131,6 @@
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)](https://www.star-history.com/#cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)
+
 
 

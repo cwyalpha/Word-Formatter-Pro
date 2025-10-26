@@ -12,15 +12,11 @@ from docx.shared import Pt, Cm, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-
 from docx.document import Document as _Document
 from docx.oxml.table import CT_Tbl
 from docx.oxml.text.paragraph import CT_P
 from docx.table import Table, _Cell
 from docx.text.paragraph import Paragraph
-
-# --- NEW: Import for Drag-and-Drop functionality ---
-# Make sure to install it first: pip install tkinterdnd2-tk
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -30,7 +26,6 @@ class WordProcessor:
         self.config = config
         self.temp_files = []
         self.log_callback = log_callback
-        # --- MODIFICATION: Attribute to hold the COM application instance ---
         self.com_app = None
 
     def _log(self, message):
@@ -47,7 +42,6 @@ class WordProcessor:
                 self._log(f"  > 警告：删除临时文件 {f} 失败: {e}")
         self.temp_files.clear()
 
-    # --- MODIFICATION: Lazily get or create a single COM app instance ---
     def _get_wps_app(self):
         if self.com_app is None:
             self._log("首次需要，正在启动WPS/Word应用...")
@@ -63,7 +57,6 @@ class WordProcessor:
             self.com_app.Visible = False
         return self.com_app
         
-    # --- MODIFICATION: New method to quit the app at the very end ---
     def quit_com_app(self):
         if self.com_app:
             self._log("所有任务完成，正在关闭WPS/Word应用...")
@@ -106,7 +99,6 @@ class WordProcessor:
         elif file_ext in ['.wps', '.doc']:
             self._log(f"正在转换 {file_ext} 文件为 .docx...")
             app = self._get_wps_app()
-            # --- MODIFICATION: Removed app.Quit() from here ---
             doc_com = app.Documents.Open(os.path.abspath(input_path), ReadOnly=1)
             doc_com.SaveAs2(os.path.abspath(temp_docx_path), FileFormat=12)
             doc_com.Close()
@@ -147,7 +139,6 @@ class WordProcessor:
             self._log("预处理完成。")
         except Exception as e:
             self._log(f"警告：执行预处理任务时出错: {e}")
-        # --- MODIFICATION: Removed app.Quit() from here ---
 
     def _create_page_number(self, paragraph, text):
         font_name = self.config['page_number_font']
@@ -212,10 +203,10 @@ class WordProcessor:
         para.paragraph_format.keep_with_next = False
         para.paragraph_format.keep_lines_together = False
         para.paragraph_format.page_break_before = False
-        para.paragraph_format.keep_together = False # MODIFICATION: Added this line
+        para.paragraph_format.keep_together = False 
 
-    def _format_heading(self, para, level, is_from_txt): # MODIFICATION: Added is_from_txt parameter
-        if self.config['set_outline'] and not is_from_txt: # MODIFICATION: Check is_from_txt
+    def _format_heading(self, para, level, is_from_txt): 
+        if self.config['set_outline'] and not is_from_txt: 
             try: para.style = f'Heading {level}'
             except KeyError:
                 try: para.style = f'标题 {level}'
@@ -245,7 +236,6 @@ class WordProcessor:
             for idx, block in enumerate(self._iter_block_items(doc)):
                 if isinstance(block, Paragraph) and block.text.strip():
                     text_to_check = block.text.strip()
-                    # MODIFICATION: Check if the first non-empty line is a heading
                     if re_h1.match(text_to_check) or re_h2.match(text_to_check):
                         self._log(f"  > 首个非空行 (块 {idx + 1}) 符合标题格式，认定本文档无独立题目。")
                         return -1
@@ -270,7 +260,6 @@ class WordProcessor:
         
         doc = Document(processing_path)
         
-        # --- MODIFICATION START: Reset heading styles to preserve original bold/italic ---
         if not is_from_txt:
             self._log("正在重置标题样式以保留原文粗体/斜体...")
             for i in range(1, 5):
@@ -287,7 +276,6 @@ class WordProcessor:
                         continue
                 if not found:
                     self._log(f"  > 警告: 未找到 Level-{i} 的标题样式，跳过重置。")
-        # --- MODIFICATION END ---
 
         all_blocks = list(self._iter_block_items(doc))
         processed_indices = set()
@@ -357,7 +345,6 @@ class WordProcessor:
             if not para.text.strip(): 
                 self._log(f"段落 {current_block_num}: 空白 - 跳过"); block_idx += 1; continue
             
-            # --- MODIFICATION START: Handle paragraphs with images/objects ---
             is_pic = '<w:drawing>' in para._p.xml or '<w:pict>' in para._p.xml
             is_embedded_obj = '<w:object>' in para._p.xml
             if is_pic or is_embedded_obj:
@@ -386,7 +373,6 @@ class WordProcessor:
 
                 block_idx += 1
                 continue
-            # --- MODIFICATION END ---
 
             original_text, text_to_check = para.text, para.text.lstrip()
             leading_space_count = len(original_text) - len(text_to_check)
@@ -402,7 +388,6 @@ class WordProcessor:
                 self._strip_leading_whitespace(para); self._format_heading(para, 1, is_from_txt)
                 self._apply_font_to_runs(para, self.config['h1_font'], self.config['h1_size'], set_color=apply_color); self._apply_text_indent_and_align(para); self._reset_pagination_properties(para)
             
-            # --- MODIFICATION START: H2 in-paragraph splitting logic ---
             elif re_h2.match(text_to_check):
                 self._log(f"段落 {current_block_num}: 二级标题 - \"{para_text_preview}...\"")
                 self._strip_leading_whitespace(para)
@@ -483,7 +468,6 @@ class WordProcessor:
                     self._format_heading(para, 2, is_from_txt)
                     self._apply_font_to_runs(para, self.config['h2_font'], self.config['h2_size'], set_color=apply_color)
                     self._apply_text_indent_and_align(para); self._reset_pagination_properties(para)
-            # --- MODIFICATION END ---
                     
             elif re_h3.match(text_to_check):
                 self._log(f"段落 {current_block_num}: 三级标题 - \"{para_text_preview}...\"")
@@ -915,4 +899,5 @@ Word文档智能排版工具 v2.5.9 - 使用说明
 if __name__ == "__main__":
     root = TkinterDnD.Tk()
     app = WordFormatterGUI(root)
+
     root.mainloop()

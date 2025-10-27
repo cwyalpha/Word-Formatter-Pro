@@ -107,6 +107,11 @@ A：本程序使用 PyInstaller 打包为 `.exe`，部分杀毒软件可能会�
 
 ## 版本更新记录
 
+### v2.6.0
+
+*   **新增 设置自定义字体功能**：支持在字体选框中自定义设置字体。
+*   **新增 设置附件格式功能**：支持识别并设置附件标识（附件、附件1、附件一等）、附件标题。
+
 ### v2.5.9
 
 *   **优化 UI界面**：调整了窗口布局和组件尺寸，更适应宽屏显示器。
@@ -131,6 +136,7 @@ A：本程序使用 PyInstaller 打包为 `.exe`，部分杀毒软件可能会�
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)](https://www.star-history.com/#cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)
+
 
 
 

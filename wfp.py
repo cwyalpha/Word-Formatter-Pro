@@ -615,17 +615,44 @@ class WordFormatterGUI:
         params_frame.columnconfigure(1, weight=1); params_frame.columnconfigure(3, weight=1); params_frame.columnconfigure(5, weight=1)
         
         def create_entry(label, var_name, r, c): ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2); entry = ttk.Entry(params_frame); entry.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2); self.entries[var_name] = entry
-        def create_combo(label, var_name, opts, r, c): ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2); combo = ttk.Combobox(params_frame, values=opts, state='readonly'); combo.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2); self.entries[var_name] = combo
+        
+        # --- MODIFICATION START ---
+        # Allow combobox to be editable by adding a 'readonly' parameter
+        def create_combo(label, var_name, opts, r, c, readonly=True): 
+            ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2)
+            state = 'readonly' if readonly else 'normal'
+            combo = ttk.Combobox(params_frame, values=opts, state=state)
+            combo.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2)
+            self.entries[var_name] = combo
+        # --- MODIFICATION END ---
+            
         def create_font_size_combo(label, var_name, r, c): ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2); combo = ttk.Combobox(params_frame, values=list(self.font_size_map.keys())); combo.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2); self.entries[var_name] = combo
         
         row = 0
-        create_combo("页码对齐", 'page_number_align', ['奇偶分页', '居中'], row, 0); create_combo("题目字体", 'title_font', self.font_options['title'], row, 2); create_font_size_combo("题目字号", 'title_size', row, 4); row+=1
-        create_entry("页脚距(cm)", 'footer_distance', row, 0); create_combo("一级标题字体", 'h1_font', self.font_options['h1'], row, 2); create_font_size_combo("一级标题字号", 'h1_size', row, 4); row+=1
-        create_entry("行间距(磅)", 'line_spacing', row, 0); create_combo("二级标题字体", 'h2_font', self.font_options['h2'], row, 2); create_font_size_combo("二级标题字号", 'h2_size', row, 4); row+=1
-        create_entry("段落左缩进(cm)", 'left_indent_cm', row, 0); create_combo("正文/三级字体", 'body_font', self.font_options['body'], row, 2); create_font_size_combo("正文/三级字号", 'body_size', row, 4); row+=1
-        create_entry("段落右缩进(cm)", 'right_indent_cm', row, 0); create_combo("页码字体", 'page_number_font', self.font_options['page_number'], row, 2); create_font_size_combo("页码字号", 'page_number_size', row, 4); row+=1
-        create_entry("上边距(cm)", 'margin_top', row, 0); create_combo("表格标题字体", 'table_caption_font', self.font_options['table_caption'], row, 2); create_font_size_combo("表格标题字号", 'table_caption_size', row, 4); row+=1
-        create_entry("下边距(cm)", 'margin_bottom', row, 0); create_combo("图形标题字体", 'figure_caption_font', self.font_options['figure_caption'], row, 2); create_font_size_combo("图形标题字号", 'figure_caption_size', row, 4); row+=1
+        # --- MODIFICATION START ---
+        # Set readonly=False for font comboboxes to allow user input
+        create_combo("页码对齐", 'page_number_align', ['奇偶分页', '居中'], row, 0) # Keep this readonly
+        create_combo("题目字体", 'title_font', self.font_options['title'], row, 2, readonly=False)
+        create_font_size_combo("题目字号", 'title_size', row, 4); row+=1
+        create_entry("页脚距(cm)", 'footer_distance', row, 0)
+        create_combo("一级标题字体", 'h1_font', self.font_options['h1'], row, 2, readonly=False)
+        create_font_size_combo("一级标题字号", 'h1_size', row, 4); row+=1
+        create_entry("行间距(磅)", 'line_spacing', row, 0)
+        create_combo("二级标题字体", 'h2_font', self.font_options['h2'], row, 2, readonly=False)
+        create_font_size_combo("二级标题字号", 'h2_size', row, 4); row+=1
+        create_entry("段落左缩进(cm)", 'left_indent_cm', row, 0)
+        create_combo("正文/三级字体", 'body_font', self.font_options['body'], row, 2, readonly=False)
+        create_font_size_combo("正文/三级字号", 'body_size', row, 4); row+=1
+        create_entry("段落右缩进(cm)", 'right_indent_cm', row, 0)
+        create_combo("页码字体", 'page_number_font', self.font_options['page_number'], row, 2, readonly=False)
+        create_font_size_combo("页码字号", 'page_number_size', row, 4); row+=1
+        create_entry("上边距(cm)", 'margin_top', row, 0)
+        create_combo("表格标题字体", 'table_caption_font', self.font_options['table_caption'], row, 2, readonly=False)
+        create_font_size_combo("表格标题字号", 'table_caption_size', row, 4); row+=1
+        create_entry("下边距(cm)", 'margin_bottom', row, 0)
+        create_combo("图形标题字体", 'figure_caption_font', self.font_options['figure_caption'], row, 2, readonly=False)
+        create_font_size_combo("图形标题字号", 'figure_caption_size', row, 4); row+=1
+        # --- MODIFICATION END ---
         create_entry("左边距(cm)", 'margin_left', row, 0); create_entry("右边距(cm)", 'margin_right', row, 2); row+=1
         ttk.Checkbutton(params_frame, text="自动设置大纲级别 (对TXT源文件无效)", variable=self.set_outline_var).grid(row=row, columnspan=6, pady=5); row+=1
         

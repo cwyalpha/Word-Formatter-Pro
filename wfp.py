@@ -12,11 +12,13 @@ from docx.shared import Pt, Cm, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+
 from docx.document import Document as _Document
 from docx.oxml.table import CT_Tbl
 from docx.oxml.text.paragraph import CT_P
 from docx.table import Table, _Cell
 from docx.text.paragraph import Paragraph
+
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -26,6 +28,7 @@ class WordProcessor:
         self.config = config
         self.temp_files = []
         self.log_callback = log_callback
+        # --- MODIFICATION: Attribute to hold the COM application instance ---
         self.com_app = None
 
     def _log(self, message):
@@ -42,6 +45,7 @@ class WordProcessor:
                 self._log(f"  > 警告：删除临时文件 {f} 失败: {e}")
         self.temp_files.clear()
 
+    # --- MODIFICATION: Lazily get or create a single COM app instance ---
     def _get_wps_app(self):
         if self.com_app is None:
             self._log("首次需要，正在启动WPS/Word应用...")
@@ -57,6 +61,7 @@ class WordProcessor:
             self.com_app.Visible = False
         return self.com_app
         
+    # --- MODIFICATION: New method to quit the app at the very end ---
     def quit_com_app(self):
         if self.com_app:
             self._log("所有任务完成，正在关闭WPS/Word应用...")
@@ -113,25 +118,16 @@ class WordProcessor:
         try:
             doc_com = app.Documents.Open(os.path.abspath(docx_path))
             
-            # 关闭修订追踪
-            doc_com.TrackRevisions = False
-            self._log("  > 已关闭修订追踪。")
+            doc_com.TrackRevisions = False; self._log("  > 已关闭修订追踪。")
             
-            # 第一轮：接受现有修订
             if doc_com.Revisions.Count > 0:
-                doc_com.AcceptAllRevisions()
-                self._log("  > 已接受文档副本中的所有修订。")
+                doc_com.AcceptAllRevisions(); self._log("  > 已接受文档副本中的所有修订。")
             
-            # 转换自动编号为文本
-            doc_com.Content.ListFormat.ConvertNumbersToText()
-            self._log("  > 已将副本中的自动编号转换为文本。")
+            doc_com.Content.ListFormat.ConvertNumbersToText(); self._log("  > 已将副本中的自动编号转换为文本。")
             
-            # 第二轮：接受转换产生的修订（如果有）
             if doc_com.Revisions.Count > 0:
-                doc_com.AcceptAllRevisions()
-                self._log("  > 已接受编号转换产生的修订。")
+                doc_com.AcceptAllRevisions(); self._log("  > 已接受编号转换产生的修订。")
             
-            # 确保修订追踪保持关闭状态
             doc_com.TrackRevisions = False
             
             doc_com.Save()
@@ -214,10 +210,10 @@ class WordProcessor:
 
     def _apply_text_indent_and_align(self, para):
         para.paragraph_format.first_line_indent = None
-        para.paragraph_format.left_indent = Cm(self.config['left_indent_cm']) # This resets paragraph indent
+        para.paragraph_format.left_indent = Cm(self.config['left_indent_cm'])
         para.paragraph_format.right_indent = Cm(self.config['right_indent_cm'])
         ind = para._p.get_or_add_pPr().get_or_add_ind()
-        ind.set(qn("w:firstLineChars"), "200") # This applies first-line indent
+        ind.set(qn("w:firstLineChars"), "200")
         para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
     def _iter_block_items(self, parent):
@@ -263,23 +259,16 @@ class WordProcessor:
         if not is_from_txt:
             self._log("正在重置标题样式以保留原文粗体/斜体...")
             for i in range(1, 5):
-                found = False
                 for style_name_tpl in [f'Heading {i}', f'标题 {i}']:
                     try:
                         style = doc.styles[style_name_tpl]
-                        style.font.bold = None
-                        style.font.italic = None
+                        style.font.bold = None; style.font.italic = None
                         self._log(f"  > 样式 '{style_name_tpl}' 的强制粗体/斜体已重置。")
-                        found = True
                         break 
-                    except KeyError:
-                        continue
-                if not found:
-                    self._log(f"  > 警告: 未找到 Level-{i} 的标题样式，跳过重置。")
+                    except KeyError: continue
 
         all_blocks = list(self._iter_block_items(doc))
         processed_indices = set()
-        
         apply_color = not is_from_txt
 
         if not is_from_txt:
@@ -287,9 +276,7 @@ class WordProcessor:
             for idx, block in enumerate(all_blocks):
                 is_pic_para = isinstance(block, Paragraph) and ('<w:drawing>' in block._p.xml or '<w:pict>' in block._p.xml)
                 is_table = isinstance(block, Table)
-                
                 if not (is_pic_para or is_table): continue
-                
                 for direction in [-1, 1]:
                     caption_found = False
                     for i in range(idx + direction, -1 if direction == -1 else len(all_blocks), direction):
@@ -303,9 +290,7 @@ class WordProcessor:
                                 self._log(f"  > 发现 {detected_type} 的标题: \"{text[:30]}...\" (在段落 {i+1})")
                                 config_font_key = f'{("figure" if detected_type == "图" else "table")}_caption_font'
                                 config_size_key = f'{("figure" if detected_type == "图" else "table")}_caption_size'
-                                config_font = self.config[config_font_key]
-                                config_size = self.config[config_size_key]
-                                self._apply_font_to_runs(potential_caption, config_font, config_size, set_color=apply_color)
+                                self._apply_font_to_runs(potential_caption, self.config[config_font_key], self.config[config_size_key], set_color=apply_color)
                                 processed_indices.add(i)
                                 caption_found = True
                             break 
@@ -319,6 +304,7 @@ class WordProcessor:
         re_h2 = re.compile(r'^[（\(][一二三四五六七八九十百千万零]+[）\)]')
         re_h3 = re.compile(r'^\d+\s*[\.．]')
         re_h4 = re.compile(r'^[（\(]\d+[）\)]')
+        re_attachment = re.compile(r'^附件\s*(\d+|[一二三四五六七八九十百千万零]+)?\s*[:：]?$')
 
         if title_block_index != -1:
             para = all_blocks[title_block_index]
@@ -333,9 +319,8 @@ class WordProcessor:
             block = all_blocks[block_idx]
             
             if block_idx in processed_indices:
-                if block_idx != title_block_index: self._log(f"块 {block_idx + 1}: 已作为图表标题处理 - 跳过")
-                block_idx += 1
-                continue
+                if block_idx != title_block_index: self._log(f"块 {block_idx + 1}: 已作为图表/附件标题处理 - 跳过")
+                block_idx += 1; continue
 
             current_block_num = block_idx + 1
             if isinstance(block, Table): 
@@ -348,33 +333,21 @@ class WordProcessor:
             is_pic = '<w:drawing>' in para._p.xml or '<w:pict>' in para._p.xml
             is_embedded_obj = '<w:object>' in para._p.xml
             if is_pic or is_embedded_obj:
-                log_msg = "图片" if is_pic else "附件"
-                self._log(f"段落 {current_block_num}: {log_msg} - 仅格式化文字")
-                
-                text_to_check = para.text.lstrip()
-                para_text_preview = text_to_check[:30].replace("\n", " ")
-
-                # Apply font formatting based on heading or body rules, but leave other properties (indent, spacing) alone.
+                self._log(f"段落 {current_block_num}: {'图片' if is_pic else '附件'} - 仅格式化文字")
+                text_to_check = para.text.lstrip(); para_text_preview = text_to_check[:30].replace("\n", " ")
                 if re_h1.match(text_to_check):
                     self._log(f"  > 文字识别为一级标题: \"{para_text_preview}...\"")
                     self._apply_font_to_runs(para, self.config['h1_font'], self.config['h1_size'], set_color=apply_color)
                 elif re_h2.match(text_to_check):
                     self._log(f"  > 文字识别为二级标题: \"{para_text_preview}...\"")
                     self._apply_font_to_runs(para, self.config['h2_font'], self.config['h2_size'], set_color=apply_color)
-                elif re_h3.match(text_to_check):
-                    self._log(f"  > 文字识别为三级标题: \"{para_text_preview}...\"")
-                    self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
-                elif re_h4.match(text_to_check):
-                    self._log(f"  > 文字识别为四级标题: \"{para_text_preview}...\"")
-                    self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
-                elif text_to_check: # Only format if there is text
+                elif text_to_check:
                     self._log(f"  > 文字识别为正文: \"{para_text_preview}...\"")
                     self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
+                block_idx += 1; continue
 
-                block_idx += 1
-                continue
-
-            original_text, text_to_check = para.text, para.text.lstrip()
+            original_text, text_to_check_stripped = para.text, para.text.strip()
+            text_to_check = para.text.lstrip()
             leading_space_count = len(original_text) - len(text_to_check)
             para_text_preview = text_to_check[:30].replace("\n", " ")
             
@@ -382,8 +355,45 @@ class WordProcessor:
             spacing.set(qn('w:beforeAutospacing'), '0'); spacing.set(qn('w:afterAutospacing'), '0')
             para.paragraph_format.space_before, para.paragraph_format.space_after = Pt(0), Pt(0)
             para.paragraph_format.line_spacing = Pt(self.config['line_spacing'])
+
+            is_attachment_enabled = self.config.get('enable_attachment_formatting', False)
+            is_attachment_candidate = False
+            if is_from_txt:
+                if re_attachment.match(text_to_check_stripped): is_attachment_candidate = True
+            elif para.alignment in [WD_ALIGN_PARAGRAPH.LEFT, WD_ALIGN_PARAGRAPH.JUSTIFY, None] and re_attachment.match(text_to_check_stripped):
+                is_attachment_candidate = True
+
+            if is_attachment_enabled and is_attachment_candidate:
+                self._log(f"段落 {current_block_num}: 附件标识 - \"{para_text_preview}...\"")
+                self._strip_leading_whitespace(para)
+                self._apply_font_to_runs(para, self.config['attachment_font'], self.config['attachment_size'], set_color=apply_color)
+                self._reset_pagination_properties(para)
+                para.paragraph_format.page_break_before = True
+                para.paragraph_format.first_line_indent = Pt(0)
+                para.paragraph_format.left_indent = Pt(0)
+                para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+                attachment_title_idx, search_idx = -1, block_idx + 1
+                while search_idx < len(all_blocks):
+                    next_block = all_blocks[search_idx]
+                    if isinstance(next_block, Paragraph) and next_block.text.strip():
+                        attachment_title_idx = search_idx; break
+                    elif isinstance(next_block, Table): break
+                    search_idx += 1
+
+                if attachment_title_idx != -1:
+                    para_title = all_blocks[attachment_title_idx]
+                    self._log(f"  > 识别到附件标题: \"{para_title.text.strip()[:30]}...\" (在段落 {attachment_title_idx + 1})")
+                    processed_indices.add(attachment_title_idx)
+                    self._strip_leading_whitespace(para_title)
+                    self._apply_font_to_runs(para_title, self.config['title_font'], self.config['title_size'], set_color=apply_color)
+                    para_title.alignment, para_title.paragraph_format.first_line_indent = WD_ALIGN_PARAGRAPH.CENTER, None
+                    self._reset_pagination_properties(para_title)
+                
+                block_idx = (attachment_title_idx + 1) if attachment_title_idx != -1 else search_idx
+                continue
             
-            if re_h1.match(text_to_check):
+            elif re_h1.match(text_to_check):
                 self._log(f"段落 {current_block_num}: 一级标题 - \"{para_text_preview}...\"")
                 self._strip_leading_whitespace(para); self._format_heading(para, 1, is_from_txt)
                 self._apply_font_to_runs(para, self.config['h1_font'], self.config['h1_size'], set_color=apply_color); self._apply_text_indent_and_align(para); self._reset_pagination_properties(para)
@@ -391,112 +401,62 @@ class WordProcessor:
             elif re_h2.match(text_to_check):
                 self._log(f"段落 {current_block_num}: 二级标题 - \"{para_text_preview}...\"")
                 self._strip_leading_whitespace(para)
-                
                 parts = para.text.split('。', 1)
-                
                 if len(parts) == 2 and parts[1].strip():
                     self._log("  > 检测到二级标题与正文在同一段落，执行段内格式拆分。")
                     title_len = len(parts[0]) + 1
-                    
-                    # Store original run properties before clearing the paragraph
-                    original_runs = []
-                    for r in para.runs:
-                        original_runs.append({
-                            'text': r.text, 'bold': r.bold, 'italic': r.italic,
-                            'underline': r.underline, 'font_color': r.font.color.rgb
-                        })
-                    
-                    para.clear() # Clear all runs from the paragraph
-
-                    # Rebuild the paragraph with new runs and formatting
+                    original_runs_info = [{'text': r.text, 'bold': r.bold, 'italic': r.italic, 'underline': r.underline, 'font_color': r.font.color.rgb} for r in para.runs]
+                    para.clear()
                     char_count = 0
-                    for run_info in original_runs:
-                        run_text = run_info['text']
-                        run_end_pos = char_count + len(run_text)
-
-                        # Case 1: The entire run is within the title part
+                    for run_info in original_runs_info:
+                        run_text = run_info['text']; run_end_pos = char_count + len(run_text)
+                        
+                        title_run, body_run = None, None
                         if run_end_pos <= title_len:
                             new_run = para.add_run(run_text)
                             self._set_run_font(new_run, self.config['h2_font'], self.config['h2_size'], set_color=apply_color)
-                        
-                        # Case 2: The entire run is within the body part
                         elif char_count >= title_len:
                             new_run = para.add_run(run_text)
                             self._set_run_font(new_run, self.config['body_font'], self.config['body_size'], set_color=apply_color)
-                        
-                        # Case 3: The run crosses the boundary and needs to be split
                         else:
                             split_index = title_len - char_count
-                            title_part = run_text[:split_index]
-                            body_part = run_text[split_index:]
-                            
+                            title_part, body_part = run_text[:split_index], run_text[split_index:]
                             if title_part:
                                 title_run = para.add_run(title_part)
                                 self._set_run_font(title_run, self.config['h2_font'], self.config['h2_size'], set_color=apply_color)
                             if body_part:
                                 body_run = para.add_run(body_part)
                                 self._set_run_font(body_run, self.config['body_font'], self.config['body_size'], set_color=apply_color)
-                            
-                            # The newly added run is the last one in the paragraph
-                            new_run = para.runs[-1] 
                         
-                        # Restore original formatting (bold, italic, etc.) to the last added run
-                        # In Case 3, we restore it to both parts if they exist
-                        if 'title_run' in locals() and title_run:
-                            title_run.bold = run_info['bold']; title_run.italic = run_info['italic']
-                            title_run.underline = run_info['underline']; title_run.font.color.rgb = run_info['font_color']
-                        if 'body_run' in locals() and body_run:
-                            body_run.bold = run_info['bold']; body_run.italic = run_info['italic']
-                            body_run.underline = run_info['underline']; body_run.font.color.rgb = run_info['font_color']
-                        if 'new_run' in locals() and not ('title_run' in locals() or 'body_run' in locals()):
-                             new_run.bold = run_info['bold']; new_run.italic = run_info['italic']
-                             new_run.underline = run_info['underline']; new_run.font.color.rgb = run_info['font_color']
+                        runs_to_format = [r for r in [title_run, body_run] if r] or [para.runs[-1]]
+                        for r in runs_to_format:
+                            r.bold = run_info['bold']; r.italic = run_info['italic']; r.underline = run_info['underline']
+                            if run_info['font_color']: r.font.color.rgb = run_info['font_color']
                         
-                        # Clean up local references for next iteration
-                        locals().pop('title_run', None); locals().pop('body_run', None); locals().pop('new_run', None)
                         char_count = run_end_pos
-                    
-                    self._format_heading(para, 2, is_from_txt)
-                    self._apply_text_indent_and_align(para)
-                    self._reset_pagination_properties(para)
-
-                else: # Original behavior if no split is needed
+                    self._format_heading(para, 2, is_from_txt); self._apply_text_indent_and_align(para); self._reset_pagination_properties(para)
+                else:
                     match = re.match(r'^[（\(](.+?)[）\)](.*)', text_to_check, re.DOTALL)
                     if match and not (text_to_check.startswith('（') and text_to_check.strip().endswith('）')):
                         self._log("  > 已将二级标题的括号统一为中文括号。")
                         for r in para.runs: r.text = r.text.replace('(', '（', 1).replace(')', '）', 1)
-                    self._format_heading(para, 2, is_from_txt)
-                    self._apply_font_to_runs(para, self.config['h2_font'], self.config['h2_size'], set_color=apply_color)
-                    self._apply_text_indent_and_align(para); self._reset_pagination_properties(para)
-                    
-            elif re_h3.match(text_to_check):
-                self._log(f"段落 {current_block_num}: 三级标题 - \"{para_text_preview}...\"")
-                self._strip_leading_whitespace(para); self._format_heading(para, 3, is_from_txt)
+                    self._format_heading(para, 2, is_from_txt); self._apply_font_to_runs(para, self.config['h2_font'], self.config['h2_size'], set_color=apply_color); self._apply_text_indent_and_align(para); self._reset_pagination_properties(para)
+            
+            elif re_h3.match(text_to_check) or re_h4.match(text_to_check):
+                level = 3 if re_h3.match(text_to_check) else 4
+                self._log(f"段落 {current_block_num}: {'三' if level == 3 else '四'}级标题 - \"{para_text_preview}...\"")
+                self._strip_leading_whitespace(para); self._format_heading(para, level, is_from_txt)
                 self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color); self._apply_text_indent_and_align(para); self._reset_pagination_properties(para)
-            elif re_h4.match(text_to_check):
-                self._log(f"段落 {current_block_num}: 四级标题 - \"{para_text_preview}...\"")
-                self._strip_leading_whitespace(para); self._format_heading(para, 4, is_from_txt)
-                self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color); self._apply_text_indent_and_align(para); self._reset_pagination_properties(para)
-            elif not is_from_txt:
-                if para.alignment in [WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.RIGHT]:
-                    align_text = "居中" if para.alignment == WD_ALIGN_PARAGRAPH.CENTER else "右对齐"
-                    self._log(f"段落 {current_block_num}: {align_text}正文 - 保留原对齐")
-                    self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color); self._reset_pagination_properties(para)
-                elif leading_space_count > 5:
-                    self._log(f"段落 {current_block_num}: 正文 (保留前导空格) - \"{para_text_preview}...\"")
-                    self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
-                    para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; self._reset_pagination_properties(para)
-                elif (para.paragraph_format.first_line_indent is None or para.paragraph_format.first_line_indent.pt == 0) and leading_space_count == 0:
-                    self._log(f"段落 {current_block_num}: 正文 (保留0缩进) - \"{para_text_preview}...\"")
-                    self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
-                    para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; self._reset_pagination_properties(para)
-                else:
-                    self._log(f"段落 {current_block_num}: 正文 (应用标准缩进) - \"{para_text_preview}...\"")
-                    self._strip_leading_whitespace(para)
-                    self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
-                    self._apply_text_indent_and_align(para); self._reset_pagination_properties(para)
+            elif not is_from_txt and (para.alignment in [WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.RIGHT] or leading_space_count > 5 or (para.paragraph_format.first_line_indent is None or para.paragraph_format.first_line_indent.pt == 0) and leading_space_count == 0):
+                if para.alignment in [WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.RIGHT]: self._log(f"段落 {current_block_num}: {'居中' if para.alignment == WD_ALIGN_PARAGRAPH.CENTER else '右对齐'}正文 - 保留原对齐")
+                elif leading_space_count > 5: self._log(f"段落 {current_block_num}: 正文 (保留前导空格) - \"{para_text_preview}...\"")
+                else: self._log(f"段落 {current_block_num}: 正文 (保留0缩进) - \"{para_text_preview}...\"")
+                self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
+                para.alignment = para.alignment if para.alignment is not None else WD_ALIGN_PARAGRAPH.LEFT
+                self._reset_pagination_properties(para)
             else:
-                self._log(f"段落 {current_block_num}: 正文 (源自TXT，强制缩进) - \"{para_text_preview}...\"")
+                log_reason = "源自TXT，强制缩进" if is_from_txt else "应用标准缩进"
+                self._log(f"段落 {current_block_num}: 正文 ({log_reason}) - \"{para_text_preview}...\"")
                 self._strip_leading_whitespace(para)
                 self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
                 self._apply_text_indent_and_align(para); self._reset_pagination_properties(para)
@@ -511,8 +471,8 @@ class WordProcessor:
 class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
-        master.title("Word文档智能排版工具 v2.5.9")
-        master.geometry("1200x750")
+        master.title("Word文档智能排版工具 v2.6.0")
+        master.geometry("1200x800")
 
         self.font_size_map = {
             '一号 (26pt)': 26, '小一 (24pt)': 24, '二号 (22pt)': 22, '小二 (18pt)': 18,
@@ -522,22 +482,23 @@ class WordFormatterGUI:
         self.font_size_map_rev = {v: k for k, v in self.font_size_map.items()}
         
         self.default_params = {
-            'page_number_align': '奇偶分页', 'footer_distance': 2.5, 'line_spacing': 28,
             'margin_top': 3.7, 'margin_bottom': 3.5, 'margin_left': 2.8, 'margin_right': 2.6,
+            'footer_distance': 2.5, 'line_spacing': 28, 'page_number_align': '奇偶分页',
             'title_font': '方正小标宋简体', 'h1_font': '黑体', 'h2_font': '楷体_GB2312', 'body_font': '仿宋_GB2312',
-            'page_number_font': '宋体', 'table_caption_font': '黑体', 'figure_caption_font': '黑体',
+            'page_number_font': '宋体', 'table_caption_font': '黑体', 'figure_caption_font': '黑体', 'attachment_font': '黑体',
             'title_size': 22, 'h1_size': 16, 'h2_size': 16, 'body_size': 16, 'page_number_size': 14,
-            'table_caption_size': 14, 'figure_caption_size': 14,
+            'table_caption_size': 14, 'figure_caption_size': 14, 'attachment_size': 16,
             'left_indent_cm': 0.0, 'right_indent_cm': 0.0,
-            'set_outline': True
+            'set_outline': True, 'enable_attachment_formatting': True
         }
         self.font_options = {
-            'title': ['方正小标宋简体', '方正小标宋_GBK', '华文中宋'], 'h1': ['黑体', '方正黑体_GBK', '方正黑体简体', '华文黑体'],
-            'h2': ['楷体_GB2312', '方正楷体_GBK', '楷体', '方正楷体简体', '华文楷体'],
-            'body': ['仿宋_GB2312', '方正仿宋_GBK', '仿宋', '方正仿宋简体', '华文仿宋'], 'page_number': ['宋体', 'Times New Roman'],
-            'table_caption': ['黑体', '宋体', '仿宋_GB2312'], 'figure_caption': ['黑体', '宋体', '仿宋_GB2312']
+            'title': ['方正小标宋简体', '方正小标宋_GBK', '华文中宋', '宋体'], 'h1': ['黑体', '方正黑体_GBK', '方正黑体简体', '华文黑体', '宋体'],
+            'h2': ['楷体_GB2312', '方正楷体_GBK', '楷体', '方正楷体简体', '华文楷体', '宋体'],
+            'body': ['仿宋_GB2312', '方正仿宋_GBK', '仿宋', '方正仿宋简体', '华文仿宋', '宋体'], 'page_number': ['宋体', 'Times New Roman'],
+            'table_caption': ['黑体', '宋体', '仿宋_GB2312'], 'figure_caption': ['黑体', '宋体', '仿宋_GB2312'], 'attachment': ['黑体', '宋体', '仿宋_GB2312']
         }
         self.set_outline_var = tk.BooleanVar(value=self.default_params['set_outline'])
+        self.enable_attachment_var = tk.BooleanVar(value=self.default_params['enable_attachment_formatting'])
         self.entries = {}
         
         self.default_config_path = "default_config.json"
@@ -557,29 +518,20 @@ class WordFormatterGUI:
         main_pane = ttk.PanedWindow(self.master, orient=tk.HORIZONTAL)
         main_pane.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
 
-        left_frame = ttk.Frame(main_pane, padding=5)
-        main_pane.add(left_frame, weight=1)
-
-        notebook = ttk.Notebook(left_frame)
-        notebook.pack(fill=tk.BOTH, expand=True)
-        self.notebook = notebook
+        left_frame = ttk.Frame(main_pane, padding=5); main_pane.add(left_frame, weight=1)
+        notebook = ttk.Notebook(left_frame); notebook.pack(fill=tk.BOTH, expand=True); self.notebook = notebook
 
         file_tab = ttk.Frame(notebook); notebook.add(file_tab, text=' 文件批量处理 ')
         list_frame = ttk.LabelFrame(file_tab, text="待处理文件列表（可拖拽文件或文件夹）")
         list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
-        
         scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
         self.file_listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, selectmode=tk.EXTENDED)
-        scrollbar.config(command=self.file_listbox.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        scrollbar.config(command=self.file_listbox.yview); scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         self.file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        
-        self.file_listbox.drop_target_register(DND_FILES)
-        self.file_listbox.dnd_bind('<<Drop>>', self.handle_drop)
+        self.file_listbox.drop_target_register(DND_FILES); self.file_listbox.dnd_bind('<<Drop>>', self.handle_drop)
         self.placeholder_label = ttk.Label(self.file_listbox, text="可以拖拽文件或文件夹到这里", foreground="grey")
         
-        file_button_frame = ttk.Frame(file_tab)
-        file_button_frame.pack(fill=tk.X, pady=5)
+        file_button_frame = ttk.Frame(file_tab); file_button_frame.pack(fill=tk.X, pady=5)
         ttk.Button(file_button_frame, text="添加文件", command=self.add_files).pack(side=tk.LEFT, expand=True, fill=tk.X)
         ttk.Button(file_button_frame, text="添加文件夹", command=self.add_folder).pack(side=tk.LEFT, expand=True, fill=tk.X)
         ttk.Button(file_button_frame, text="移除文件", command=self.remove_files).pack(side=tk.LEFT, expand=True, fill=tk.X)
@@ -591,35 +543,35 @@ class WordFormatterGUI:
         self.direct_text_input = scrolledtext.ScrolledText(text_frame, height=10, wrap=tk.WORD)
         self.direct_text_input.pack(fill=tk.BOTH, expand=True)
 
-        right_frame = ttk.Frame(main_pane, padding=5)
-        main_pane.add(right_frame, weight=2)
-
-        params_frame = ttk.LabelFrame(right_frame, text="参数设置")
-        params_frame.pack(fill=tk.X, pady=(0, 5))
+        right_frame = ttk.Frame(main_pane, padding=5); main_pane.add(right_frame, weight=2)
+        params_frame = ttk.LabelFrame(right_frame, text="参数设置"); params_frame.pack(fill=tk.X, pady=(0, 5))
         params_frame.columnconfigure(1, weight=1); params_frame.columnconfigure(3, weight=1); params_frame.columnconfigure(5, weight=1)
         
-        def create_entry(label, var_name, r, c): ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2); entry = ttk.Entry(params_frame); entry.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2); self.entries[var_name] = entry
-        def create_combo(label, var_name, opts, r, c): ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2); combo = ttk.Combobox(params_frame, values=opts, state='readonly'); combo.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2); self.entries[var_name] = combo
-        def create_font_size_combo(label, var_name, r, c): ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2); combo = ttk.Combobox(params_frame, values=list(self.font_size_map.keys())); combo.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2); self.entries[var_name] = combo
+        def create_entry(label, var, r, c): ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2); e = ttk.Entry(params_frame); e.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2); self.entries[var] = e
+        def create_combo(label, var, opts, r, c): ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2); cb = ttk.Combobox(params_frame, values=opts, state='readonly'); cb.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2); self.entries[var] = cb
+        def create_font_combo(label, var, opts, r, c): ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2); cb = ttk.Combobox(params_frame, values=opts); cb.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2); self.entries[var] = cb
+        def create_font_size_combo(label, var, r, c): ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2); cb = ttk.Combobox(params_frame, values=list(self.font_size_map.keys())); cb.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2); self.entries[var] = cb
         
         row = 0
-        create_combo("页码对齐", 'page_number_align', ['奇偶分页', '居中'], row, 0); create_combo("题目字体", 'title_font', self.font_options['title'], row, 2); create_font_size_combo("题目字号", 'title_size', row, 4); row+=1
-        create_entry("页脚距(cm)", 'footer_distance', row, 0); create_combo("一级标题字体", 'h1_font', self.font_options['h1'], row, 2); create_font_size_combo("一级标题字号", 'h1_size', row, 4); row+=1
-        create_entry("行间距(磅)", 'line_spacing', row, 0); create_combo("二级标题字体", 'h2_font', self.font_options['h2'], row, 2); create_font_size_combo("二级标题字号", 'h2_size', row, 4); row+=1
-        create_entry("段落左缩进(cm)", 'left_indent_cm', row, 0); create_combo("正文/三级字体", 'body_font', self.font_options['body'], row, 2); create_font_size_combo("正文/三级字号", 'body_size', row, 4); row+=1
-        create_entry("段落右缩进(cm)", 'right_indent_cm', row, 0); create_combo("页码字体", 'page_number_font', self.font_options['page_number'], row, 2); create_font_size_combo("页码字号", 'page_number_size', row, 4); row+=1
-        create_entry("上边距(cm)", 'margin_top', row, 0); create_combo("表格标题字体", 'table_caption_font', self.font_options['table_caption'], row, 2); create_font_size_combo("表格标题字号", 'table_caption_size', row, 4); row+=1
-        create_entry("下边距(cm)", 'margin_bottom', row, 0); create_combo("图形标题字体", 'figure_caption_font', self.font_options['figure_caption'], row, 2); create_font_size_combo("图形标题字号", 'figure_caption_size', row, 4); row+=1
+        create_combo("页码对齐", 'page_number_align', ['奇偶分页', '居中'], row, 0); create_font_combo("题目字体", 'title_font', self.font_options['title'], row, 2); create_font_size_combo("题目字号", 'title_size', row, 4); row+=1
+        create_entry("页脚距(cm)", 'footer_distance', row, 0); create_font_combo("一级标题字体", 'h1_font', self.font_options['h1'], row, 2); create_font_size_combo("一级标题字号", 'h1_size', row, 4); row+=1
+        create_entry("行间距(磅)", 'line_spacing', row, 0); create_font_combo("二级标题字体", 'h2_font', self.font_options['h2'], row, 2); create_font_size_combo("二级标题字号", 'h2_size', row, 4); row+=1
+        create_entry("段落左缩进(cm)", 'left_indent_cm', row, 0); create_font_combo("正文/三四级字体", 'body_font', self.font_options['body'], row, 2); create_font_size_combo("正文/三四级字号", 'body_size', row, 4); row+=1
+        create_entry("段落右缩进(cm)", 'right_indent_cm', row, 0); create_font_combo("页码字体", 'page_number_font', self.font_options['page_number'], row, 2); create_font_size_combo("页码字号", 'page_number_size', row, 4); row+=1
+        create_entry("上边距(cm)", 'margin_top', row, 0); create_font_combo("表格标题字体", 'table_caption_font', self.font_options['table_caption'], row, 2); create_font_size_combo("表格标题字号", 'table_caption_size', row, 4); row+=1
+        create_entry("下边距(cm)", 'margin_bottom', row, 0); create_font_combo("图形标题字体", 'figure_caption_font', self.font_options['figure_caption'], row, 2); create_font_size_combo("图形标题字号", 'figure_caption_size', row, 4); row+=1
         create_entry("左边距(cm)", 'margin_left', row, 0); create_entry("右边距(cm)", 'margin_right', row, 2); row+=1
-        ttk.Checkbutton(params_frame, text="自动设置大纲级别 (对TXT源文件无效)", variable=self.set_outline_var).grid(row=row, columnspan=6, pady=5); row+=1
+
+        ttk.Separator(params_frame, orient='horizontal').grid(row=row, column=0, columnspan=6, sticky='ew', pady=5); row+=1
+        ttk.Checkbutton(params_frame, text="附件设置 (段前分页、识别标题)", variable=self.enable_attachment_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
+        create_font_combo("附件标识字体", 'attachment_font', self.font_options['attachment'], row, 2); create_font_size_combo("附件标识字号", 'attachment_size', row, 4); row+=1
         
-        log_frame = ttk.LabelFrame(right_frame, text="调试日志")
-        log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
-        self.debug_text = scrolledtext.ScrolledText(log_frame, height=8, state='disabled', wrap=tk.WORD)
-        self.debug_text.pack(fill=tk.BOTH, expand=True)
+        ttk.Checkbutton(params_frame, text="自动设置大纲级别 (对非TXT源文件)", variable=self.set_outline_var).grid(row=row, columnspan=6, pady=5); row+=1
         
-        button_frame = ttk.Frame(right_frame)
-        button_frame.pack(fill=tk.X, pady=5)
+        log_frame = ttk.LabelFrame(right_frame, text="调试日志"); log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+        self.debug_text = scrolledtext.ScrolledText(log_frame, height=8, state='disabled', wrap=tk.WORD); self.debug_text.pack(fill=tk.BOTH, expand=True)
+        
+        button_frame = ttk.Frame(right_frame); button_frame.pack(fill=tk.X, pady=5)
         ttk.Button(button_frame, text="加载配置", command=self.load_config).pack(side=tk.LEFT, expand=True, fill=tk.X)
         ttk.Button(button_frame, text="保存配置", command=self.save_config).pack(side=tk.LEFT, expand=True, fill=tk.X)
         ttk.Button(button_frame, text="保存为默认", command=self.save_default_config).pack(side=tk.LEFT, expand=True, fill=tk.X)
@@ -630,47 +582,36 @@ class WordFormatterGUI:
 
         self._update_listbox_placeholder()
 
-
     def log_to_debug_window(self, message):
         self.master.update_idletasks(); self.debug_text.config(state='normal'); self.debug_text.insert(tk.END, message + '\n'); self.debug_text.config(state='disabled'); self.debug_text.see(tk.END)
     
     def load_initial_config(self):
         if os.path.exists(self.default_config_path):
             try:
-                with open(self.default_config_path, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                self._apply_config(config)
-                self.log_to_debug_window(f"已加载默认配置文件: {self.default_config_path}")
+                with open(self.default_config_path, 'r', encoding='utf-8') as f: config = json.load(f)
+                self._apply_config(config); self.log_to_debug_window(f"已加载默认配置文件: {self.default_config_path}")
             except Exception as e:
-                self.log_to_debug_window(f"加载默认配置 '{self.default_config_path}' 失败: {e}。将使用内置默认值。")
-                self.load_defaults()
-        else:
-            self.log_to_debug_window("未找到默认配置文件，将使用内置默认值。")
-            self.load_defaults()
+                self.log_to_debug_window(f"加载默认配置 '{self.default_config_path}' 失败: {e}。将使用内置默认值。"); self.load_defaults()
+        else: self.log_to_debug_window("未找到默认配置文件，将使用内置默认值。"); self.load_defaults()
 
-    def _apply_config(self, loaded_config):
-        self.set_outline_var.set(loaded_config.get('set_outline', True))
-        for key, value in loaded_config.items():
-            if key == 'set_outline': continue
+    def _apply_config(self, config):
+        self.set_outline_var.set(config.get('set_outline', True))
+        self.enable_attachment_var.set(config.get('enable_attachment_formatting', True))
+        for key, value in config.items():
+            if key in ['set_outline', 'enable_attachment_formatting']: continue
             widget = self.entries.get(key)
             if widget:
-                if "_size" in key:
-                    display_val = self.font_size_map_rev.get(value, str(value))
-                    widget.set(display_val)
-                elif isinstance(widget, ttk.Combobox):
-                    widget.set(value)
-                else:
-                    widget.delete(0, tk.END)
-                    widget.insert(0, str(value))
+                if "_size" in key: widget.set(self.font_size_map_rev.get(value, str(value)))
+                elif isinstance(widget, ttk.Combobox): widget.set(value)
+                else: widget.delete(0, tk.END); widget.insert(0, str(value))
 
     def load_defaults(self):
         self.set_outline_var.set(self.default_params['set_outline'])
+        self.enable_attachment_var.set(self.default_params['enable_attachment_formatting'])
         for key, value in self.default_params.items():
-            if key == 'set_outline': continue
+            if key in ['set_outline', 'enable_attachment_formatting']: continue
             widget = self.entries.get(key)
-            if "_size" in key:
-                display_val = self.font_size_map_rev.get(value, str(value))
-                widget.set(display_val)
+            if "_size" in key: widget.set(self.font_size_map_rev.get(value, str(value)))
             elif isinstance(widget, ttk.Combobox): widget.set(value)
             else: widget.delete(0, tk.END); widget.insert(0, str(value))
     
@@ -679,17 +620,12 @@ class WordFormatterGUI:
         for key, widget in self.entries.items():
             value = widget.get().strip()
             if "_size" in key:
-                if value in self.font_size_map:
-                    config[key] = self.font_size_map[value]
-                else:
-                    try: config[key] = float(value)
-                    except (ValueError, TypeError):
-                        self.log_to_debug_window(f"警告: 无效的字号值 '{value}' for '{key}'. 使用默认值 16pt。")
-                        config[key] = 16
+                config[key] = self.font_size_map.get(value, 16)
             else:
                 try: config[key] = float(value) if '.' in value else int(value)
                 except (ValueError, TypeError): config[key] = value
         config['set_outline'] = self.set_outline_var.get()
+        config['enable_attachment_formatting'] = self.enable_attachment_var.get()
         return config
 
     def save_config(self):
@@ -700,118 +636,85 @@ class WordFormatterGUI:
     
     def save_default_config(self):
         try:
-            with open(self.default_config_path, 'w', encoding='utf-8') as f:
-                json.dump(self.collect_config(), f, ensure_ascii=False, indent=4)
+            with open(self.default_config_path, 'w', encoding='utf-8') as f: json.dump(self.collect_config(), f, ensure_ascii=False, indent=4)
             messagebox.showinfo("成功", f"当前配置已保存为默认配置。\n下次启动软件时将自动加载。")
-        except Exception as e:
-            messagebox.showerror("错误", f"保存默认配置失败: {e}")
+        except Exception as e: messagebox.showerror("错误", f"保存默认配置失败: {e}")
 
     def load_config(self):
         file_path = filedialog.askopenfilename(filetypes=[("JSON files", "*.json")])
         if file_path:
             try:
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    loaded_config = json.load(f)
-                self._apply_config(loaded_config)
-                messagebox.showinfo("成功", "配置已加载")
-            except Exception as e:
-                messagebox.showerror("错误", f"加载配置文件失败: {e}")
+                with open(file_path, 'r', encoding='utf-8') as f: loaded_config = json.load(f)
+                self._apply_config(loaded_config); messagebox.showinfo("成功", "配置已加载")
+            except Exception as e: messagebox.showerror("错误", f"加载配置文件失败: {e}")
 
     def _update_listbox_placeholder(self):
-        if self.file_listbox.size() == 0:
-            self.placeholder_label.place(in_=self.file_listbox, relx=0.5, rely=0.5, anchor=tk.CENTER)
-        else:
-            self.placeholder_label.place_forget()
+        if self.file_listbox.size() == 0: self.placeholder_label.place(in_=self.file_listbox, relx=0.5, rely=0.5, anchor=tk.CENTER)
+        else: self.placeholder_label.place_forget()
 
-    def handle_drop(self, event):
-        paths = self.master.tk.splitlist(event.data)
-        self._add_paths_to_listbox(paths)
+    def handle_drop(self, event): self._add_paths_to_listbox(self.master.tk.splitlist(event.data))
 
     def _add_paths_to_listbox(self, paths):
-        current_files = set(self.file_listbox.get(0, tk.END))
-        added_count = 0
-        
+        current_files = set(self.file_listbox.get(0, tk.END)); added_count = 0
         for path in paths:
             if os.path.isdir(path):
                 for root, _, files in os.walk(path):
                     for f in files:
                         if f.lower().endswith(('.docx', '.doc', '.wps', '.txt')):
                             full_path = os.path.join(root, f)
-                            if full_path not in current_files:
-                                self.file_listbox.insert(tk.END, full_path)
-                                current_files.add(full_path)
-                                added_count += 1
-            elif os.path.isfile(path):
-                if path.lower().endswith(('.docx', '.doc', '.wps', '.txt')):
-                    if path not in current_files:
-                        self.file_listbox.insert(tk.END, path)
-                        current_files.add(path)
-                        added_count += 1
-        
-        if added_count > 0:
-            self.log_to_debug_window(f"通过按钮或拖拽添加了 {added_count} 个新文件。")
-        
+                            if full_path not in current_files: self.file_listbox.insert(tk.END, full_path); current_files.add(full_path); added_count += 1
+            elif os.path.isfile(path) and path.lower().endswith(('.docx', '.doc', '.wps', '.txt')):
+                if path not in current_files: self.file_listbox.insert(tk.END, path); current_files.add(path); added_count += 1
+        if added_count > 0: self.log_to_debug_window(f"通过按钮或拖拽添加了 {added_count} 个新文件。")
         self._update_listbox_placeholder()
 
     def add_files(self):
         files = filedialog.askopenfilenames(filetypes=[("所有支持的文件", "*.docx;*.doc;*.wps;*.txt"), ("Word 文档", "*.docx;*.doc"), ("WPS 文档", "*.wps"), ("纯文本", "*.txt")])
-        if files:
-            self._add_paths_to_listbox(files)
+        if files: self._add_paths_to_listbox(files)
         
     def add_folder(self):
         folder = filedialog.askdirectory()
-        if folder:
-            self._add_paths_to_listbox([folder])
+        if folder: self._add_paths_to_listbox([folder])
 
     def remove_files(self):
         selected_indices = self.file_listbox.curselection()
-        if not selected_indices:
-            messagebox.showinfo("提示", "请先在列表中选择要移除的文件。")
-            return
-        for index in sorted(selected_indices, reverse=True):
-            self.file_listbox.delete(index)
+        if not selected_indices: messagebox.showinfo("提示", "请先在列表中选择要移除的文件。"); return
+        for index in sorted(selected_indices, reverse=True): self.file_listbox.delete(index)
         self._update_listbox_placeholder()
 
-    def clear_list(self): 
-        self.file_listbox.delete(0, tk.END)
-        self._update_listbox_placeholder()
+    def clear_list(self): self.file_listbox.delete(0, tk.END); self._update_listbox_placeholder()
 
     def show_help_window(self):
-        help_win = tk.Toplevel(self.master); help_win.title("使用说明"); help_win.geometry("600x500")
+        help_win = tk.Toplevel(self.master); help_win.title("使用说明"); help_win.geometry("600x550")
         help_text_widget = scrolledtext.ScrolledText(help_win, wrap=tk.WORD, state='disabled')
         help_text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         help_content = """
-Word文档智能排版工具 v2.5.9 - 使用说明
+Word文档智能排版工具 v2.6.0 - 使用说明
 
 本工具旨在提供一键式的专业文档排版体验，支持批量处理和高度自定义。
 
 【核心功能模式】
-软件提供两种输入模式，通过主界面的选项卡切换：
-1. 文件批量处理：
-   - 添加文件/文件夹：批量添加待处理的文档。
-   - 【新】拖拽支持：可以直接从文件管理器将文件或文件夹拖拽到文件列表中。
-   - 支持格式：.docx, .doc, .wps, .txt。其中 .doc, .wps, .txt 会在后台自动转换为 .docx 进行处理（需安装WPS或Office）。
-2. 直接输入文本：
-   - 直接在文本框中撰写或粘贴内容，程序会将其作为 .txt 内容处理。
+1. 文件批量处理：可拖拽或添加 .docx, .doc, .wps, .txt 文件。
+2. 直接输入文本：直接粘贴文本进行排版。
 
 【操作流程】
 1. 选择模式并添加内容。
 2. （可选）在“参数设置”区调整格式。
-3. 点击“开始排版”，并根据提示选择输出位置。
-4. 在“调试日志”窗口查看详细处理步骤。
+3. 点击“开始排版”，并选择输出位置。
 
 【参数与配置】
-- 可通过按钮“恢复内置默认”、“保存配置”、“加载配置”来管理排版方案。
-- 新增“保存为默认”功能，可将当前设置存为默认方案，软件下次启动时自动加载。
+- 自定义字体：所有字体设置项都支持手动输入。
+- 配置管理：可通过按钮“恢复内置默认”、“保存/加载配置”、“保存为默认”来管理排版方案。
 
 【智能识别特性】
-- TXT标题识别优化：若TXT文件首个非空行即为一级或二级标题，则认为文档无独立标题。
-- 自动识别题目、1-4级标题。
-- 智能处理图、表标题。
-- 保留段内格式：统一字体字号时，会完整保留原文的【加粗、斜体】等格式。
-- 二级标题智能拆分：若二级标题后紧跟正文（如“（一）标题。正文...”），会自动在【同一个段落内】为标题和正文应用不同格式，不改变段落结构。
-- 表格、图片、附件等内容会自动跳过格式化。
-- TXT源文档无附加格式：从TXT转换的文档不会被强加任何颜色、加粗或斜体样式。
+- 自动识别题目、1-4级标题、图/表标题。
+- 附件处理：
+  - 自动识别“附件1”、“附件一”等标识行。
+  - 可在参数区独立设置附件标识的字体、字号。
+  - 启用“附件设置”后，会自动为附件添加“段前分页”，并将附件标识后的第一段文字识别为附件的独立标题。
+- 保留原文格式：统一格式时，会保留【加粗、斜体】等。
+- 二级标题智能拆分：若二级标题后紧跟正文（如“（一）标题。正文...”），会自动在【同一个段落内】为标题和正文应用不同格式。
+- 豁免内容：表格、图片、附件等内容会自动跳过格式化。
 
 【安全提示】
 本工具【绝对不会】修改您的任何原始文件。所有操作都在后台的临时副本上进行，确保源文件100%安全。
@@ -821,15 +724,8 @@ Word文档智能排版工具 v2.5.9 - 使用说明
         help_text_widget.config(state='disabled')
 
     def start_processing(self):
-        warning_title = "处理前重要提示"
-        warning_message = (
-            "为了防止数据丢失，请在继续前关闭所有已打开的Word和WPS文档（包括wps、表格、PPT等所有文档）。\n\n"
-            "本程序在转换文件格式时需要调用Word/WPS程序，这可能会导致您未保存的工作被强制关闭。\n\n"
-            "您确定要继续吗？"
-        )
-        if not messagebox.askokcancel(warning_title, warning_message):
-            self.log_to_debug_window("用户已取消操作。")
-            return
+        if not messagebox.askokcancel("处理前重要提示", "为防止数据丢失，请在继续前关闭所有已打开的Word和WPS程序。\n\n本程序在转换文件格式时需调用Word/WPS，可能会导致您未保存的工作被强制关闭。\n\n您确定要继续吗？"):
+            self.log_to_debug_window("用户已取消操作。"); return
             
         self.debug_text.config(state='normal'); self.debug_text.delete('1.0', tk.END); self.debug_text.config(state='disabled')
         
@@ -839,8 +735,7 @@ Word文档智能排版工具 v2.5.9 - 使用说明
         try:
             if active_tab_index == 0:
                 file_list = self.file_listbox.get(0, tk.END)
-                if not file_list:
-                    messagebox.showwarning("警告", "文件列表为空，请先添加文件！"); return
+                if not file_list: messagebox.showwarning("警告", "文件列表为空！"); return
                 output_dir = filedialog.askdirectory(title="请选择一个文件夹用于存放处理后的文件")
                 if not output_dir: return
 
@@ -855,20 +750,16 @@ Word文档智能排版工具 v2.5.9 - 使用说明
                         success_count += 1
                     except Exception as e:
                         logging.error(f"处理文件失败: {input_path}\n{e}", exc_info=True)
-                        self.log_to_debug_window(f"\n❌ 处理文件 {os.path.basename(input_path)} 时发生严重错误：\n{e}")
-                        fail_count += 1
-                    finally:
-                        processor._cleanup_temp_files()
+                        self.log_to_debug_window(f"\n❌ 处理文件 {os.path.basename(input_path)} 时发生严重错误：\n{e}"); fail_count += 1
+                    finally: processor._cleanup_temp_files()
                 
                 summary_message = f"批量处理完成！\n\n成功: {success_count}个\n失败: {fail_count}个"
                 if fail_count > 0: summary_message += "\n\n失败详情请查看日志窗口。"
-                messagebox.showinfo("完成", summary_message)
-                self.log_to_debug_window(f"\n🎉 {summary_message}")
+                messagebox.showinfo("完成", summary_message); self.log_to_debug_window(f"\n🎉 {summary_message}")
 
             elif active_tab_index == 1:
                 text_content = self.direct_text_input.get('1.0', tk.END).strip()
-                if not text_content:
-                    messagebox.showwarning("警告", "文本框内容为空！"); return
+                if not text_content: messagebox.showwarning("警告", "文本框内容为空！"); return
                 output_path = filedialog.asksaveasfilename(defaultextension=".docx", filetypes=[("Word Document", "*.docx")], initialfile="formatted_document.docx")
                 if not output_path: return
                 
@@ -884,11 +775,8 @@ Word文档智能排版工具 v2.5.9 - 使用说明
                 finally:
                     processor._cleanup_temp_files()
                     if temp_file_path and os.path.exists(temp_file_path):
-                        try:
-                            os.remove(temp_file_path)
-                            self.log_to_debug_window(f"  > 输入文本的临时文件已删除")
+                        try: os.remove(temp_file_path); self.log_to_debug_window(f"  > 输入文本的临时文件已删除")
                         except OSError: pass
-        
         except Exception as e:
             logging.error(f"处理过程中发生严重错误: {e}", exc_info=True)
             self.log_to_debug_window(f"\n❌ 处理过程中发生严重错误：\n{e}")
@@ -899,5 +787,4 @@ Word文档智能排版工具 v2.5.9 - 使用说明
 if __name__ == "__main__":
     root = TkinterDnD.Tk()
     app = WordFormatterGUI(root)
-
     root.mainloop()

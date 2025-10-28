@@ -316,9 +316,7 @@ class WordProcessor:
         re_h2 = re.compile(r'^[（\(][一二三四五六七八九十百千万零]+[）\)]')
         re_h3 = re.compile(r'^\d+\s*[\.．]')
         re_h4 = re.compile(r'^[（\(]\d+[）\)]')
-        # --- 新增/修改 START ---
         re_attachment = re.compile(r'^附件\s*(\d+|[一二三四五六七八九十百千万零]+)?\s*[:：]?$')
-        # --- 新增/修改 END ---
 
         if title_block_index != -1:
             para = all_blocks[title_block_index]
@@ -333,9 +331,7 @@ class WordProcessor:
             block = all_blocks[block_idx]
             
             if block_idx in processed_indices:
-                # --- 新增/修改 START ---
                 if block_idx != title_block_index: self._log(f"块 {block_idx + 1}: 已作为图表/附件标题处理 - 跳过")
-                # --- 新增/修改 END ---
                 block_idx += 1
                 continue
 
@@ -376,9 +372,7 @@ class WordProcessor:
                 continue
 
             original_text, text_to_check = para.text, para.text.lstrip()
-            # --- 新增/修改 START ---
             text_to_check_stripped = para.text.strip()
-            # --- 新增/修改 END ---
             leading_space_count = len(original_text) - len(text_to_check)
             para_text_preview = text_to_check[:30].replace("\n", " ")
             
@@ -387,7 +381,6 @@ class WordProcessor:
             para.paragraph_format.space_before, para.paragraph_format.space_after = Pt(0), Pt(0)
             para.paragraph_format.line_spacing = Pt(self.config['line_spacing'])
 
-            # --- 新增/修改 START ---
             is_attachment_enabled = self.config.get('enable_attachment_formatting', False)
             is_attachment_candidate = False
             if is_from_txt:
@@ -398,21 +391,14 @@ class WordProcessor:
             if is_attachment_enabled and is_attachment_candidate:
                 self._log(f"段落 {current_block_num}: 附件标识 - \"{para_text_preview}...\"")
                 self._strip_leading_whitespace(para)
-                # 使用独立的附件字体配置
                 self._apply_font_to_runs(para, self.config['attachment_font'], self.config['attachment_size'], set_color=apply_color)
                 self._reset_pagination_properties(para)
                 para.paragraph_format.page_break_before = True  # 段前分页
-                # --- 修改位置 START ---
-                # 强制设置段落左侧缩进为0
                 para.paragraph_format.left_indent = Pt(0)
-                
-                # 清除任何可能存在的基于磅(pt)的首行缩进设置，为下面的OXML设置做准备
                 para.paragraph_format.first_line_indent = None
                 
-                # 通过OXML强制设置首行缩进为0个字符，这是最可靠的方式
                 ind = para._p.get_or_add_pPr().get_or_add_ind()
                 ind.set(qn("w:firstLineChars"), "0")
-                # --- 修改位置 END ---
                 
                 para.alignment = WD_ALIGN_PARAGRAPH.LEFT
                 self._format_heading(para, 1, is_from_txt) # 设置大纲级别
@@ -439,7 +425,6 @@ class WordProcessor:
                 # 更新 block_idx 以跳过已处理的附件标题
                 block_idx = (attachment_title_idx + 1) if attachment_title_idx != -1 else search_idx
                 continue
-            # --- 新增/修改 END ---
             
             elif re_h1.match(text_to_check):
                 self._log(f"段落 {current_block_num}: 一级标题 - \"{para_text_preview}...\"")
@@ -556,10 +541,8 @@ class WordProcessor:
 class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
-        # --- 新增/修改 START ---
         master.title("Word文档智能排版工具 v2.6.0")
         master.geometry("1200x800")
-        # --- 新增/修改 END ---
 
         self.font_size_map = {
             '一号 (26pt)': 26, '小一 (24pt)': 24, '二号 (22pt)': 22, '小二 (18pt)': 18,
@@ -568,7 +551,6 @@ class WordFormatterGUI:
         }
         self.font_size_map_rev = {v: k for k, v in self.font_size_map.items()}
         
-        # --- 新增/修改 START ---
         self.default_params = {
             'page_number_align': '奇偶分页', 'footer_distance': 2.5, 'line_spacing': 28,
             'margin_top': 3.7, 'margin_bottom': 3.5, 'margin_left': 2.8, 'margin_right': 2.6,
@@ -587,7 +569,6 @@ class WordFormatterGUI:
         }
         self.set_outline_var = tk.BooleanVar(value=self.default_params['set_outline'])
         self.enable_attachment_var = tk.BooleanVar(value=self.default_params['enable_attachment_formatting'])
-        # --- 新增/修改 END ---
         self.entries = {}
         
         self.default_config_path = "default_config.json"
@@ -650,7 +631,6 @@ class WordFormatterGUI:
         
         def create_entry(label, var_name, r, c): ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2); entry = ttk.Entry(params_frame); entry.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2); self.entries[var_name] = entry
         
-        # --- 新增/修改 START ---
         # 允许字体下拉框可编辑
         def create_combo(label, var_name, opts, r, c, readonly=True): 
             ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2)
@@ -658,7 +638,6 @@ class WordFormatterGUI:
             combo = ttk.Combobox(params_frame, values=opts, state=state)
             combo.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2)
             self.entries[var_name] = combo
-        # --- 新增/修改 END ---
             
         def create_font_size_combo(label, var_name, r, c): ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2); combo = ttk.Combobox(params_frame, values=list(self.font_size_map.keys())); combo.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2); self.entries[var_name] = combo
         
@@ -673,10 +652,8 @@ class WordFormatterGUI:
         create_combo("二级标题字体", 'h2_font', self.font_options['h2'], row, 2, readonly=False)
         create_font_size_combo("二级标题字号", 'h2_size', row, 4); row+=1
         create_entry("段落左缩进(cm)", 'left_indent_cm', row, 0)
-        # --- 新增/修改 START ---
         create_combo("正文/三四级字体", 'body_font', self.font_options['body'], row, 2, readonly=False)
         create_font_size_combo("正文/三四级字号", 'body_size', row, 4); row+=1
-        # --- 新增/修改 END ---
         create_entry("段落右缩进(cm)", 'right_indent_cm', row, 0)
         create_combo("页码字体", 'page_number_font', self.font_options['page_number'], row, 2, readonly=False)
         create_font_size_combo("页码字号", 'page_number_size', row, 4); row+=1
@@ -688,12 +665,10 @@ class WordFormatterGUI:
         create_font_size_combo("图形标题字号", 'figure_caption_size', row, 4); row+=1
         create_entry("左边距(cm)", 'margin_left', row, 0); create_entry("右边距(cm)", 'margin_right', row, 2); row+=1
         
-        # --- 新增/修改 START ---
         ttk.Separator(params_frame, orient='horizontal').grid(row=row, column=0, columnspan=6, sticky='ew', pady=5); row+=1
         ttk.Checkbutton(params_frame, text="附件设置 (段前分页、识别标题)", variable=self.enable_attachment_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
         create_combo("附件标识字体", 'attachment_font', self.font_options['attachment'], row, 2, readonly=False); 
         create_font_size_combo("附件标识字号", 'attachment_size', row, 4); row+=1
-        # --- 新增/修改 END ---
         
         ttk.Checkbutton(params_frame, text="自动设置大纲级别 (对非TXT源文件)", variable=self.set_outline_var).grid(row=row, columnspan=6, pady=5); row+=1
         
@@ -734,13 +709,9 @@ class WordFormatterGUI:
 
     def _apply_config(self, loaded_config):
         self.set_outline_var.set(loaded_config.get('set_outline', True))
-        # --- 新增/修改 START ---
         self.enable_attachment_var.set(loaded_config.get('enable_attachment_formatting', True))
-        # --- 新增/修改 END ---
         for key, value in loaded_config.items():
-            # --- 新增/修改 START ---
             if key in ['set_outline', 'enable_attachment_formatting']: continue
-            # --- 新增/修改 END ---
             widget = self.entries.get(key)
             if widget:
                 if "_size" in key:
@@ -754,13 +725,9 @@ class WordFormatterGUI:
 
     def load_defaults(self):
         self.set_outline_var.set(self.default_params['set_outline'])
-        # --- 新增/修改 START ---
         self.enable_attachment_var.set(self.default_params['enable_attachment_formatting'])
-        # --- 新增/修改 END ---
         for key, value in self.default_params.items():
-            # --- 新增/修改 START ---
             if key in ['set_outline', 'enable_attachment_formatting']: continue
-            # --- 新增/修改 END ---
             widget = self.entries.get(key)
             if "_size" in key:
                 display_val = self.font_size_map_rev.get(value, str(value))
@@ -784,9 +751,7 @@ class WordFormatterGUI:
                 try: config[key] = float(value) if '.' in value else int(value)
                 except (ValueError, TypeError): config[key] = value
         config['set_outline'] = self.set_outline_var.get()
-        # --- 新增/修改 START ---
         config['enable_attachment_formatting'] = self.enable_attachment_var.get()
-        # --- 新增/修改 END ---
         return config
 
     def save_config(self):
@@ -874,7 +839,6 @@ class WordFormatterGUI:
         self._update_listbox_placeholder()
 
     def show_help_window(self):
-        # --- 新增/修改 START ---
         help_win = tk.Toplevel(self.master); help_win.title("使用说明"); help_win.geometry("600x550")
         help_text_widget = scrolledtext.ScrolledText(help_win, wrap=tk.WORD, state='disabled')
         help_text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
@@ -909,7 +873,6 @@ Word文档智能排版工具 v2.6.0 - 使用说明
 【安全提示】
 本工具【绝对不会】修改您的任何原始文件。所有操作都在后台的临时副本上进行，确保源文件100%安全。
 """
-        # --- 新增/修改 END ---
         help_text_widget.config(state='normal')
         help_text_widget.insert('1.0', help_content.strip().replace('   -', '\t-'))
         help_text_widget.config(state='disabled')

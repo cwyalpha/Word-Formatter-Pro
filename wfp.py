@@ -182,6 +182,19 @@ class WordProcessor:
     def _apply_font_to_runs(self, para, font_name, size_pt, set_color=False):
         for run in para.runs: self._set_run_font(run, font_name, size_pt, set_color=set_color)
 
+    def _get_paragraph_font_info(self, para):
+        """获取段落主要字体和字号信息"""
+        if not para.runs:
+            return None, None
+        
+        # 获取第一个非空run的字体信息
+        for run in para.runs:
+            if run.text.strip():
+                font_name = run.font.name
+                font_size = run.font.size.pt if run.font.size else None
+                return font_name, font_size
+        return None, None
+
     def _strip_leading_whitespace(self, para):
         if not para.runs: return
         while para.runs and not para.runs[0].text.strip():
@@ -270,33 +283,155 @@ class WordProcessor:
             if isinstance(child, CT_P): yield Paragraph(child, parent)
             elif isinstance(child, CT_Tbl): yield Table(child, parent)
     
-    def _find_title_paragraph_index(self, doc, is_from_txt):
+    def _find_title_and_subtitle_paragraphs(self, doc, is_from_txt, start_index=0):
+        """
+        查找题目和副标题段落的索引范围
+        返回: (title_indices, subtitle_indices)
+        title_indices: 题目行的索引列表
+        subtitle_indices: 副标题行的索引列表
+        """
         ch_num = r'[一二三四五六七八九十百千万零]+'
         re_h1 = re.compile(r'^' + ch_num + r'\s*、')
         re_h2 = re.compile(r'^[（\(]' + ch_num + r'[）\)]')
 
+        all_blocks = list(self._iter_block_items(doc))
+        
+        # 查找首个标题行
+        first_title_idx = -1
+        
         if is_from_txt:
             self._log("文档源自 TXT，采用智能规则查找题目...")
-            for idx, block in enumerate(self._iter_block_items(doc)):
+            for idx in range(start_index, len(all_blocks)):
+                block = all_blocks[idx]
                 if isinstance(block, Paragraph) and block.text.strip():
                     text_to_check = block.text.strip()
                     if re_h1.match(text_to_check) or re_h2.match(text_to_check):
                         self._log(f"  > 首个非空行 (块 {idx + 1}) 符合标题格式，认定本文档无独立题目。")
-                        return -1
+                        return [], []
                     else:
-                        self._log(f"  > 在块 {idx + 1} 发现首个非空段落，认定为题目。")
-                        return idx
-            self._log("  > 扫描结束，未找到任何非空段落。"); return -1
+                        self._log(f"  > 在块 {idx + 1} 发现首个非空段落，认定为题目首行。")
+                        first_title_idx = idx
+                        break
         else:
             self._log("正在预扫描以确定居中题目位置...")
-            for idx, block in enumerate(self._iter_block_items(doc)):
-                if not isinstance(block, Paragraph) or not block.text.strip(): continue
-                para = block; text_to_check = para.text.lstrip()
+            for idx in range(start_index, len(all_blocks)):
+                block = all_blocks[idx]
+                if not isinstance(block, Paragraph) or not block.text.strip(): 
+                    continue
+                para = block
+                text_to_check = para.text.lstrip()
                 if re_h1.match(text_to_check) or re_h2.match(text_to_check):
-                    self._log("  > 发现一级/二级标题，在此之前未找到居中题目。"); return -1
+                    self._log("  > 发现一级/二级标题，在此之前未找到居中题目。")
+                    return [], []
                 if para.alignment == WD_ALIGN_PARAGRAPH.CENTER:
-                    self._log(f"  > 在块 {idx + 1} 发现潜在题目。"); return idx
-            self._log("  > 扫描结束，未能在主要标题前找到任何居中段落作为题目。"); return -1
+                    self._log(f"  > 在块 {idx + 1} 发现潜在题目首行。")
+                    first_title_idx = idx
+                    break
+        
+        if first_title_idx == -1:
+            self._log("  > 扫描结束，未能找到题目。")
+            return [], []
+        
+        # 获取首个标题行的字体字号信息
+        first_title_para = all_blocks[first_title_idx]
+        title_font, title_size = self._get_paragraph_font_info(first_title_para)
+        
+        # 向下查找连续的标题行
+        title_indices = [first_title_idx]
+        idx = first_title_idx + 1
+        
+        while idx < len(all_blocks):
+            block = all_blocks[idx]
+            if not isinstance(block, Paragraph):
+                break
+            
+            para = block
+            text = para.text.strip()
+            
+            # 遇到空行，停止标题识别
+            if not text:
+                self._log(f"  > 在块 {idx + 1} 遇到空行，标题识别结束。")
+                break
+            
+            # 检查是否居中
+            if para.alignment != WD_ALIGN_PARAGRAPH.CENTER:
+                break
+            
+            # 检查字体字号是否与首行相同
+            para_font, para_size = self._get_paragraph_font_info(para)
+            if para_font == title_font and para_size == title_size:
+                self._log(f"  > 块 {idx + 1} 也是标题行（居中且字体字号相同）。")
+                title_indices.append(idx)
+                idx += 1
+            else:
+                # 字体字号不同，可能是副标题的开始
+                break
+        
+        self._log(f"  > 共识别到 {len(title_indices)} 行标题。")
+        
+        # 查找副标题
+        subtitle_indices = []
+        subtitle_start_idx = idx
+        
+        # 跳过空行
+        while subtitle_start_idx < len(all_blocks):
+            block = all_blocks[subtitle_start_idx]
+            if isinstance(block, Paragraph) and block.text.strip():
+                break
+            if isinstance(block, Paragraph):
+                subtitle_start_idx += 1
+            else:
+                # 遇到非段落（如表格），停止
+                break
+        
+        # 检查是否有副标题
+        if subtitle_start_idx < len(all_blocks):
+            block = all_blocks[subtitle_start_idx]
+            if isinstance(block, Paragraph):
+                para = block
+                text = para.text.strip()
+                
+                # 副标题必须居中
+                if text and para.alignment == WD_ALIGN_PARAGRAPH.CENTER:
+                    # 检查字体字号是否与标题不同
+                    para_font, para_size = self._get_paragraph_font_info(para)
+                    if para_font != title_font or para_size != title_size:
+                        self._log(f"  > 在块 {subtitle_start_idx + 1} 发现副标题首行（居中且字体字号与标题不同）。")
+                        subtitle_indices.append(subtitle_start_idx)
+                        
+                        # 查找连续的副标题行
+                        subtitle_font, subtitle_size = para_font, para_size
+                        idx = subtitle_start_idx + 1
+                        
+                        while idx < len(all_blocks):
+                            block = all_blocks[idx]
+                            if not isinstance(block, Paragraph):
+                                break
+                            
+                            para = block
+                            text = para.text.strip()
+                            
+                            # 遇到空行，停止副标题识别
+                            if not text:
+                                self._log(f"  > 在块 {idx + 1} 遇到空行，副标题识别结束。")
+                                break
+                            
+                            # 检查是否居中
+                            if para.alignment != WD_ALIGN_PARAGRAPH.CENTER:
+                                break
+                            
+                            # 检查字体字号是否与副标题首行相同
+                            para_font, para_size = self._get_paragraph_font_info(para)
+                            if para_font == subtitle_font and para_size == subtitle_size:
+                                self._log(f"  > 块 {idx + 1} 也是副标题行（居中且字体字号相同）。")
+                                subtitle_indices.append(idx)
+                                idx += 1
+                            else:
+                                break
+                        
+                        self._log(f"  > 共识别到 {len(subtitle_indices)} 行副标题。")
+        
+        return title_indices, subtitle_indices
 
     def format_document(self, input_path, output_path):
         processing_path, is_from_txt = self.convert_to_docx(input_path)
@@ -338,8 +473,14 @@ class WordProcessor:
                             break 
                     if caption_found: break 
 
-        title_block_index = self._find_title_paragraph_index(doc, is_from_txt)
-        if title_block_index != -1: processed_indices.add(title_block_index)
+        # 查找主标题和副标题
+        title_indices, subtitle_indices = self._find_title_and_subtitle_paragraphs(doc, is_from_txt)
+        
+        # 将标题和副标题索引加入已处理集合
+        for idx in title_indices:
+            processed_indices.add(idx)
+        for idx in subtitle_indices:
+            processed_indices.add(idx)
 
         self._log("预扫描完成，开始逐段格式化...")
         if self.config['set_outline']:
@@ -353,20 +494,55 @@ class WordProcessor:
         re_h4 = re.compile(r'^[（\(]\d+[）\)]')
         re_attachment = re.compile(r'^附件\s*(\d+|[一二三四五六七八九十百千万零]+)?\s*[:：]?$')
 
-        if title_block_index != -1:
-            para = all_blocks[title_block_index]
-            self._log(f"段落 {title_block_index + 1}: 题目 - \"{para.text[:30]}...\"")
-            self._strip_leading_whitespace(para)
-            self._apply_font_to_runs(para, self.config['title_font'], self.config['title_size'], set_color=apply_color)
-            para.alignment, para.paragraph_format.first_line_indent = WD_ALIGN_PARAGRAPH.CENTER, None
-            self._reset_pagination_properties(para)
+        # 格式化主标题
+        if title_indices:
+            self._log(f"\n开始格式化主标题（共 {len(title_indices)} 行）...")
+            for idx in title_indices:
+                para = all_blocks[idx]
+                self._log(f"段落 {idx + 1}: 主标题行 - \"{para.text[:30]}...\"")
+                self._strip_leading_whitespace(para)
+                self._apply_font_to_runs(para, self.config['title_font'], self.config['title_size'], set_color=apply_color)
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                para.paragraph_format.first_line_indent = None
+                
+                # 设置标题行间距
+                spacing = para._p.get_or_add_pPr().get_or_add_spacing()
+                spacing.set(qn('w:beforeAutospacing'), '0')
+                spacing.set(qn('w:afterAutospacing'), '0')
+                para.paragraph_format.space_before = Pt(0)
+                para.paragraph_format.space_after = Pt(0)
+                para.paragraph_format.line_spacing = Pt(self.config['title_line_spacing'])
+                
+                self._reset_pagination_properties(para)
+        
+        # 格式化副标题
+        if subtitle_indices:
+            self._log(f"\n开始格式化副标题（共 {len(subtitle_indices)} 行）...")
+            for idx in subtitle_indices:
+                para = all_blocks[idx]
+                self._log(f"段落 {idx + 1}: 副标题行 - \"{para.text[:30]}...\"")
+                self._strip_leading_whitespace(para)
+                self._apply_font_to_runs(para, self.config['subtitle_font'], self.config['subtitle_size'], set_color=apply_color)
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                para.paragraph_format.first_line_indent = None
+                
+                # 设置副标题行间距
+                spacing = para._p.get_or_add_pPr().get_or_add_spacing()
+                spacing.set(qn('w:beforeAutospacing'), '0')
+                spacing.set(qn('w:afterAutospacing'), '0')
+                para.paragraph_format.space_before = Pt(0)
+                para.paragraph_format.space_after = Pt(0)
+                para.paragraph_format.line_spacing = Pt(self.config['subtitle_line_spacing'])
+                
+                self._reset_pagination_properties(para)
 
         block_idx = 0
         while block_idx < len(all_blocks):
             block = all_blocks[block_idx]
             
             if block_idx in processed_indices:
-                if block_idx != title_block_index: self._log(f"块 {block_idx + 1}: 已作为图表/附件标题处理 - 跳过")
+                if block_idx not in title_indices and block_idx not in subtitle_indices:
+                    self._log(f"块 {block_idx + 1}: 已作为图表/附件标题处理 - 跳过")
                 block_idx += 1
                 continue
 
@@ -438,26 +614,70 @@ class WordProcessor:
                 para.alignment = WD_ALIGN_PARAGRAPH.LEFT
                 self._format_heading(para, 1)
 
-                # 查找并格式化附件的标题
-                attachment_title_idx, search_idx = -1, block_idx + 1
-                while search_idx < len(all_blocks):
-                    next_block = all_blocks[search_idx]
-                    if isinstance(next_block, Paragraph) and next_block.text.strip():
-                        attachment_title_idx = search_idx; break
-                    elif isinstance(next_block, Table): break
-                    search_idx += 1
-
-                if attachment_title_idx != -1:
-                    para_title = all_blocks[attachment_title_idx]
-                    self._log(f"  > 识别到附件标题: \"{para_title.text.strip()[:30]}...\" (在段落 {attachment_title_idx + 1})")
-                    processed_indices.add(attachment_title_idx)
-                    self._strip_leading_whitespace(para_title)
-                    self._apply_font_to_runs(para_title, self.config['title_font'], self.config['title_size'], set_color=apply_color)
-                    para_title.alignment, para_title.paragraph_format.first_line_indent = WD_ALIGN_PARAGRAPH.CENTER, None
-                    self._reset_pagination_properties(para_title)
-                    self._format_heading(para_title, 1)
+                # 查找并格式化附件的标题和副标题
+                search_idx = block_idx + 1
                 
-                block_idx = (attachment_title_idx + 1) if attachment_title_idx != -1 else search_idx
+                # 查找附件的标题和副标题
+                att_title_indices, att_subtitle_indices = self._find_title_and_subtitle_paragraphs(doc, is_from_txt, search_idx)
+                
+                # 将附件的标题和副标题加入已处理集合
+                for idx in att_title_indices:
+                    processed_indices.add(idx)
+                for idx in att_subtitle_indices:
+                    processed_indices.add(idx)
+                
+                # 格式化附件的标题
+                if att_title_indices:
+                    self._log(f"  > 识别到附件标题（共 {len(att_title_indices)} 行）")
+                    for idx in att_title_indices:
+                        para_title = all_blocks[idx]
+                        self._log(f"    段落 {idx + 1}: 附件标题行 - \"{para_title.text.strip()[:30]}...\"")
+                        self._strip_leading_whitespace(para_title)
+                        self._apply_font_to_runs(para_title, self.config['title_font'], self.config['title_size'], set_color=apply_color)
+                        para_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        para_title.paragraph_format.first_line_indent = None
+                        
+                        # 设置标题行间距
+                        spacing = para_title._p.get_or_add_pPr().get_or_add_spacing()
+                        spacing.set(qn('w:beforeAutospacing'), '0')
+                        spacing.set(qn('w:afterAutospacing'), '0')
+                        para_title.paragraph_format.space_before = Pt(0)
+                        para_title.paragraph_format.space_after = Pt(0)
+                        para_title.paragraph_format.line_spacing = Pt(self.config['title_line_spacing'])
+                        
+                        self._reset_pagination_properties(para_title)
+                        self._format_heading(para_title, 1)
+                
+                # 格式化附件的副标题
+                if att_subtitle_indices:
+                    self._log(f"  > 识别到附件副标题（共 {len(att_subtitle_indices)} 行）")
+                    for idx in att_subtitle_indices:
+                        para_subtitle = all_blocks[idx]
+                        self._log(f"    段落 {idx + 1}: 附件副标题行 - \"{para_subtitle.text.strip()[:30]}...\"")
+                        self._strip_leading_whitespace(para_subtitle)
+                        self._apply_font_to_runs(para_subtitle, self.config['subtitle_font'], self.config['subtitle_size'], set_color=apply_color)
+                        para_subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                        para_subtitle.paragraph_format.first_line_indent = None
+                        
+                        # 设置副标题行间距
+                        spacing = para_subtitle._p.get_or_add_pPr().get_or_add_spacing()
+                        spacing.set(qn('w:beforeAutospacing'), '0')
+                        spacing.set(qn('w:afterAutospacing'), '0')
+                        para_subtitle.paragraph_format.space_before = Pt(0)
+                        para_subtitle.paragraph_format.space_after = Pt(0)
+                        para_subtitle.paragraph_format.line_spacing = Pt(self.config['subtitle_line_spacing'])
+                        
+                        self._reset_pagination_properties(para_subtitle)
+                
+                # 计算下一个要处理的块索引
+                if att_subtitle_indices:
+                    next_idx = max(att_subtitle_indices) + 1
+                elif att_title_indices:
+                    next_idx = max(att_title_indices) + 1
+                else:
+                    next_idx = search_idx
+                
+                block_idx = next_idx
                 continue
             
             elif re_h1.match(text_to_check):
@@ -592,7 +812,7 @@ class WordProcessor:
 class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
-        master.title("Word文档智能排版工具 v2.6.1")
+        master.title("Word文档智能排版工具 v2.7.0")
         master.geometry("1200x800")
 
         self.font_size_map = {
@@ -607,8 +827,11 @@ class WordFormatterGUI:
             'margin_top': 3.7, 'margin_bottom': 3.5, 'margin_left': 2.8, 'margin_right': 2.6,
             'title_font': '方正小标宋简体', 'h1_font': '黑体', 'h2_font': '楷体_GB2312', 'body_font': '仿宋_GB2312',
             'page_number_font': '宋体', 'table_caption_font': '黑体', 'figure_caption_font': '黑体', 'attachment_font': '黑体',
+            'subtitle_font': '楷体_GB2312',
             'title_size': 22, 'h1_size': 16, 'h2_size': 16, 'body_size': 16, 'page_number_size': 14,
             'table_caption_size': 14, 'figure_caption_size': 14, 'attachment_size': 16,
+            'subtitle_size': 16,
+            'title_line_spacing': 33, 'subtitle_line_spacing': 33,
             'left_indent_cm': 0.0, 'right_indent_cm': 0.0,
             'set_outline': True, 'enable_attachment_formatting': True
         }
@@ -616,7 +839,8 @@ class WordFormatterGUI:
             'title': ['方正小标宋简体', '方正小标宋_GBK', '华文中宋'], 'h1': ['黑体', '方正黑体_GBK', '方正黑体简体', '华文黑体'],
             'h2': ['楷体_GB2312', '方正楷体_GBK', '楷体', '方正楷体简体', '华文楷体'],
             'body': ['仿宋_GB2312', '方正仿宋_GBK', '仿宋', '方正仿宋简体', '华文仿宋'], 'page_number': ['宋体', 'Times New Roman'],
-            'table_caption': ['黑体', '宋体', '仿宋_GB2312'], 'figure_caption': ['黑体', '宋体', '仿宋_GB2312'], 'attachment': ['黑体', '宋体', '仿宋_GB2312']
+            'table_caption': ['黑体', '宋体', '仿宋_GB2312'], 'figure_caption': ['黑体', '宋体', '仿宋_GB2312'], 'attachment': ['黑体', '宋体', '仿宋_GB2312'],
+            'subtitle': ['楷体_GB2312', '方正楷体_GBK', '楷体', '方正楷体简体', '华文楷体']
         }
         self.set_outline_var = tk.BooleanVar(value=self.default_params['set_outline'])
         self.enable_attachment_var = tk.BooleanVar(value=self.default_params['enable_attachment_formatting'])
@@ -634,6 +858,16 @@ class WordFormatterGUI:
         help_menu.add_command(label="使用说明", command=self.show_help_window)
         menubar.add_cascade(label="帮助", menu=help_menu)
         self.master.config(menu=menubar)
+
+    def _show_help_tooltip(self, title, message):
+        """显示一个简单的帮助信息弹窗"""
+        messagebox.showinfo(title, message, parent=self.master)
+        
+    def _create_help_label(self, parent, text, row, col):
+        """创建一个带下划线和鼠标事件的帮助标签"""
+        help_label = ttk.Label(parent, text="(?)", foreground="blue", cursor="hand2")
+        help_label.grid(row=row, column=col, sticky='W', padx=(0, 5))
+        help_label.bind("<Button-1>", lambda e: self._show_help_tooltip("识别规则说明", text))
 
     def create_widgets(self):
         main_pane = ttk.PanedWindow(self.master, orient=tk.HORIZONTAL)
@@ -675,54 +909,81 @@ class WordFormatterGUI:
 
         right_frame = ttk.Frame(main_pane, padding=5)
         main_pane.add(right_frame, weight=2)
-
+        
         params_frame = ttk.LabelFrame(right_frame, text="参数设置")
         params_frame.pack(fill=tk.X, pady=(0, 5))
         params_frame.columnconfigure(1, weight=1); params_frame.columnconfigure(3, weight=1); params_frame.columnconfigure(5, weight=1)
+
+        # Helper functions for creating widgets
+        def create_entry(label, var_name, r, c):
+            ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2)
+            entry = ttk.Entry(params_frame)
+            entry.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2)
+            self.entries[var_name] = entry
+            return entry
         
-        def create_entry(label, var_name, r, c): ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2); entry = ttk.Entry(params_frame); entry.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2); self.entries[var_name] = entry
-        
-        # 允许字体下拉框可编辑
         def create_combo(label, var_name, opts, r, c, readonly=True): 
             ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2)
             state = 'readonly' if readonly else 'normal'
             combo = ttk.Combobox(params_frame, values=opts, state=state)
             combo.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2)
             self.entries[var_name] = combo
-            
-        def create_font_size_combo(label, var_name, r, c): ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2); combo = ttk.Combobox(params_frame, values=list(self.font_size_map.keys())); combo.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2); self.entries[var_name] = combo
+            return combo
+
+        def create_font_size_combo(label, var_name, r, c):
+            ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=5, pady=2)
+            combo = ttk.Combobox(params_frame, values=list(self.font_size_map.keys()))
+            combo.grid(row=r, column=c+1, sticky=tk.EW, padx=5, pady=2)
+            self.entries[var_name] = combo
+            return combo
         
+        def create_section_header(text, help_text, r):
+            header_frame = ttk.Frame(params_frame)
+            header_frame.grid(row=r, column=0, columnspan=7, sticky='ew', pady=(8, 2))
+            ttk.Label(header_frame, text=text, font=('Helvetica', 9, 'bold')).pack(side=tk.LEFT)
+            if help_text:
+                help_label = ttk.Label(header_frame, text="(?)", foreground="blue", cursor="hand2")
+                help_label.pack(side=tk.LEFT, padx=(2, 0))
+                help_label.bind("<Button-1>", lambda e, t=text, m=help_text: self._show_help_tooltip(f"{t} - 识别规则", m))
+            ttk.Separator(params_frame, orient='horizontal').grid(row=r+1, column=0, columnspan=7, sticky='ew')
+            return r + 2
+
         row = 0
+        
+        # Section: Page Layout
+        row = create_section_header("页面设置", None, row)
+        create_entry("上边距(cm)", 'margin_top', row, 0); create_entry("下边距(cm)", 'margin_bottom', row, 2); create_entry("页脚距(cm)", 'footer_distance', row, 4); row+=1
+        create_entry("左边距(cm)", 'margin_left', row, 0); create_entry("右边距(cm)", 'margin_right', row, 2); row+=1
         create_combo("页码对齐", 'page_number_align', ['奇偶分页', '居中'], row, 0)
-        create_combo("题目字体", 'title_font', self.font_options['title'], row, 2, readonly=False)
-        create_font_size_combo("题目字号", 'title_size', row, 4); row+=1
-        create_entry("页脚距(cm)", 'footer_distance', row, 0)
-        create_combo("一级标题字体", 'h1_font', self.font_options['h1'], row, 2, readonly=False)
-        create_font_size_combo("一级标题字号", 'h1_size', row, 4); row+=1
-        create_entry("行间距(磅)", 'line_spacing', row, 0)
-        create_combo("二级标题字体", 'h2_font', self.font_options['h2'], row, 2, readonly=False)
-        create_font_size_combo("二级标题字号", 'h2_size', row, 4); row+=1
-        create_entry("段落左缩进(cm)", 'left_indent_cm', row, 0)
-        create_combo("正文/三四级字体", 'body_font', self.font_options['body'], row, 2, readonly=False)
-        create_font_size_combo("正文/三四级字号", 'body_size', row, 4); row+=1
-        create_entry("段落右缩进(cm)", 'right_indent_cm', row, 0)
         create_combo("页码字体", 'page_number_font', self.font_options['page_number'], row, 2, readonly=False)
         create_font_size_combo("页码字号", 'page_number_size', row, 4); row+=1
-        create_entry("上边距(cm)", 'margin_top', row, 0)
-        create_combo("表格标题字体", 'table_caption_font', self.font_options['table_caption'], row, 2, readonly=False)
-        create_font_size_combo("表格标题字号", 'table_caption_size', row, 4); row+=1
-        create_entry("下边距(cm)", 'margin_bottom', row, 0)
-        create_combo("图形标题字体", 'figure_caption_font', self.font_options['figure_caption'], row, 2, readonly=False)
-        create_font_size_combo("图形标题字号", 'figure_caption_size', row, 4); row+=1
-        create_entry("左边距(cm)", 'margin_left', row, 0); create_entry("右边距(cm)", 'margin_right', row, 2); row+=1
+
+        # Section: Document Title
+        title_help = "• 主标题: 识别文档开头的连续【居中】且【字体字号相同】的段落。\n• 副标题: 主标题下方，同样【居中】但【字体字号与主标题不同】的段落。\n• TXT文件: 会将首个非层级标题的段落视为题目。"
+        row = create_section_header("标题样式", title_help, row)
+        create_combo("题目字体", 'title_font', self.font_options['title'], row, 0, readonly=False); create_font_size_combo("题目字号", 'title_size', row, 2); create_entry("题目行距(磅)", 'title_line_spacing', row, 4); row+=1
+        create_combo("副标题字体", 'subtitle_font', self.font_options['subtitle'], row, 0, readonly=False); create_font_size_combo("副标题字号", 'subtitle_size', row, 2); create_entry("副标题行距(磅)", 'subtitle_line_spacing', row, 4); row+=1
         
-        ttk.Separator(params_frame, orient='horizontal').grid(row=row, column=0, columnspan=6, sticky='ew', pady=5); row+=1
-        ttk.Checkbutton(params_frame, text="附件设置 (段前分页、识别标题)", variable=self.enable_attachment_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
-        create_combo("附件标识字体", 'attachment_font', self.font_options['attachment'], row, 2, readonly=False); 
-        create_font_size_combo("附件标识字号", 'attachment_size', row, 4); row+=1
+        # Section: Body and Headings
+        headings_help = "• 一级标题: “一、”, “二、” ...\n• 二级标题: “（一）”, “（二）” ...\n• 三级标题: “1.”, “2.” ...\n• 四级标题: “(1)”, “(2)” ...\n\n注：正文、三级、四级标题共用一套字体字号。"
+        row = create_section_header("正文与层级", headings_help, row)
+        create_combo("一级标题字体", 'h1_font', self.font_options['h1'], row, 0, readonly=False); create_font_size_combo("一级标题字号", 'h1_size', row, 2); row+=1
+        create_combo("二级标题字体", 'h2_font', self.font_options['h2'], row, 0, readonly=False); create_font_size_combo("二级标题字号", 'h2_size', row, 2); row+=1
+        create_combo("正文/三四级字体", 'body_font', self.font_options['body'], row, 0, readonly=False); create_font_size_combo("正文/三四级字号", 'body_size', row, 2); create_entry("正文行距(磅)", 'line_spacing', row, 4); row+=1
+        create_entry("段落左缩进(cm)", 'left_indent_cm', row, 0); create_entry("段落右缩进(cm)", 'right_indent_cm', row, 2); row+=1
         
-        ttk.Checkbutton(params_frame, text="自动设置大纲级别", variable=self.set_outline_var).grid(row=row, columnspan=6, pady=5); row+=1
-        
+        # Section: Other Elements
+        other_help = "• 图/表标题: 自动查找图片或表格【上方或下方】最近的、居中的、以“图”或“表”开头的段落。\n• 附件标识: 识别“附件1”、“附件：”等独立段落。启用后将自动【段前分页】并按主副标题规则识别其自身标题。"
+        row = create_section_header("其他元素", other_help, row)
+        create_combo("表格标题字体", 'table_caption_font', self.font_options['table_caption'], row, 0, readonly=False); create_font_size_combo("表格标题字号", 'table_caption_size', row, 2); row+=1
+        create_combo("图形标题字体", 'figure_caption_font', self.font_options['figure_caption'], row, 0, readonly=False); create_font_size_combo("图形标题字号", 'figure_caption_size', row, 2); row+=1
+        ttk.Checkbutton(params_frame, text="启用附件格式化", variable=self.enable_attachment_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=5, pady=2)
+        create_combo("附件标识字体", 'attachment_font', self.font_options['attachment'], row, 2, readonly=False); create_font_size_combo("附件标识字号", 'attachment_size', row, 4); row+=1
+
+        # Section: Global Options
+        ttk.Separator(params_frame, orient='horizontal').grid(row=row, column=0, columnspan=7, sticky='ew', pady=5); row+=1
+        ttk.Checkbutton(params_frame, text="自动设置大纲级别 (用于生成导航目录)", variable=self.set_outline_var).grid(row=row, columnspan=7, sticky=tk.W, padx=5); row+=1
+
         log_frame = ttk.LabelFrame(right_frame, text="调试日志")
         log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         self.debug_text = scrolledtext.ScrolledText(log_frame, height=8, state='disabled', wrap=tk.WORD)
@@ -739,7 +1000,6 @@ class WordFormatterGUI:
         ttk.Button(right_frame, text="开始排版", style='Success.TButton', command=self.start_processing).pack(fill=tk.X, ipady=8, pady=5)
 
         self._update_listbox_placeholder()
-
 
     def log_to_debug_window(self, message):
         self.master.update_idletasks(); self.debug_text.config(state='normal'); self.debug_text.insert(tk.END, message + '\n'); self.debug_text.config(state='disabled'); self.debug_text.see(tk.END)
@@ -775,16 +1035,7 @@ class WordFormatterGUI:
                     widget.insert(0, str(value))
 
     def load_defaults(self):
-        self.set_outline_var.set(self.default_params['set_outline'])
-        self.enable_attachment_var.set(self.default_params['enable_attachment_formatting'])
-        for key, value in self.default_params.items():
-            if key in ['set_outline', 'enable_attachment_formatting']: continue
-            widget = self.entries.get(key)
-            if "_size" in key:
-                display_val = self.font_size_map_rev.get(value, str(value))
-                widget.set(display_val)
-            elif isinstance(widget, ttk.Combobox): widget.set(value)
-            else: widget.delete(0, tk.END); widget.insert(0, str(value))
+        self._apply_config(self.default_params)
     
     def collect_config(self):
         config = {}
@@ -890,11 +1141,11 @@ class WordFormatterGUI:
         self._update_listbox_placeholder()
 
     def show_help_window(self):
-        help_win = tk.Toplevel(self.master); help_win.title("使用说明"); help_win.geometry("600x550")
+        help_win = tk.Toplevel(self.master); help_win.title("使用说明"); help_win.geometry("600x600")
         help_text_widget = scrolledtext.ScrolledText(help_win, wrap=tk.WORD, state='disabled')
         help_text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         help_content = """
-Word文档智能排版工具 v2.6.1 - 使用说明
+Word文档智能排版工具 v2.6.2 - 使用说明
 
 本工具旨在提供一键式的专业文档排版体验，支持批量处理和高度自定义。
 
@@ -904,28 +1155,37 @@ Word文档智能排版工具 v2.6.1 - 使用说明
 
 【操作流程】
 1. 选择模式并添加内容。
-2. （可选）在“参数设置”区调整格式。
-3. 点击“开始排版”，并选择输出位置。
+2. （可选）在"参数设置"区调整格式，可点击各分区旁的 (?) 图标查看具体识别规则。
+3. 点击"开始排版"，并选择输出位置。
 
-【参数与配置】
-- 自定义字体：所有字体设置项都支持手动输入。
-- 配置管理：可通过按钮“恢复内置默认”、“保存/加载配置”、“保存为默认”来管理排版方案。
+【智能识别规则详解】
+- 主标题与副标题:
+  • 主标题: 识别文档开头的连续【居中】且【字体字号相同】的段落。
+  • 副标题: 主标题下方，同样【居中】但【字体字号与主标题不同】的段落。
+  • TXT文件: 会将首个非层级标题的段落视为题目。
 
-【智能识别特性】
-- 自动识别题目、1-4级标题、图/表标题。
-- 附件处理：
-  - 自动识别“附件1”、“附件一”等标识行。
-  - 可在参数区独立设置附件标识的字体、字号。
-  - 启用“附件设置”后，会自动为附件添加“段前分页”，并将附件标识后的第一段文字识别为附件的独立标题。
-- 保留原文格式：统一格式时，会保留【加粗、斜体】等。
-- 二级标题智能拆分：若二级标题后紧跟正文（如“（一）标题。正文...”），会自动在【同一个段落内】为标题和正文应用不同格式。
+- 正文与层级标题:
+  • 一级标题: “一、”, “二、” ...
+  • 二级标题: “（一）”, “（二）” ...
+  • 三级标题: “1.”, “2.” ...
+  • 四级标题: “(1)”, “(2)” ...
+  • 注：正文、三级、四级标题默认共用一套字体字号。
+
+- 其他元素:
+  • 图/表标题: 自动查找图片或表格【上方或下方】最近的、居中的、以“图”或“表”开头的段落。
+  • 附件标识: 识别“附件1”、“附件：”等独立段落。启用附件格式化后，将自动【段前分页】并按主副标题规则识别其自身标题。
+
+【其他特性】
+- 保留原文格式：统一格式时，会保留【加粗、斜体、下划线、字体颜色】等。
+- 二级标题智能拆分：若二级标题后紧跟正文（如"（一）标题。正文..."），会自动在【同一个段落内】为标题和正文应用不同格式。
 - 豁免内容：表格、图片、嵌入对象等内容会自动跳过格式化。
+- 参数自定义：所有核心参数均可在界面调整。配置方案可【保存】和【加载】。
 
 【安全提示】
 本工具【绝对不会】修改您的任何原始文件。所有操作都在后台的临时副本上进行，确保源文件100%安全。
 """
         help_text_widget.config(state='normal')
-        help_text_widget.insert('1.0', help_content.strip().replace('   -', '\t-'))
+        help_text_widget.insert('1.0', help_content.strip())
         help_text_widget.config(state='disabled')
 
     def start_processing(self):

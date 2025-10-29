@@ -812,7 +812,7 @@ class WordProcessor:
 class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
-        master.title("Word文档智能排版工具 v2.7.0")
+        master.title("Word文档智能排版工具 v2.6.2")
         master.geometry("1200x800")
 
         self.font_size_map = {

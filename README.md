@@ -107,6 +107,10 @@ A：本程序使用 PyInstaller 打包为 `.exe`，部分杀毒软件可能会�
 
 ## 版本更新记录
 
+### v2.6.1
+
+*   **优化 大纲级别设置**：修复了大纲级别设置不准的问题。
+
 ### v2.6.0
 
 *   **新增 设置自定义字体功能**：支持在字体选框中自定义设置字体。
@@ -136,6 +140,7 @@ A：本程序使用 PyInstaller 打包为 `.exe`，部分杀毒软件可能会�
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)](https://www.star-history.com/#cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)
+
 
 
 

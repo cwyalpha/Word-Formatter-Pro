@@ -98,7 +98,7 @@ A：对于 32 位 Windows 系统或基于 Linux 的国产操作系统，您无�
 
 **Q4：点击“开始排版”后程序报错、卡住或无响应？**
 
-A：请务必确认您的电脑已正确安装 **Microsoft Office** 或 **WPS Office**。本工具依赖于它们的 COM 接口进行 Word 文档的读写和转换。如果未安装，程序将无法工作。
+A：请务必确认您的电脑已正确安装 **Microsoft Office** 或 **WPS Office**。本工具依赖于它们的 COM 接口进行 Word 文档的读写和转换。如果未安装，程序将无法工作。如果程序运行结束后，界面卡死、无法打开WPS或Word文档，可以在任务管理器中终止本程序以及WPS、Word程序后，再重新打开程序或相关文档。
 
 **Q5：下载的 .exe 文件被杀毒软件报毒？**
 
@@ -145,6 +145,7 @@ A：本程序使用 PyInstaller 打包为 `.exe`，部分杀毒软件可能会�
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)](https://www.star-history.com/#cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)
+
 
 
 

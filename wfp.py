@@ -202,12 +202,59 @@ class WordProcessor:
         para.paragraph_format.page_break_before = False
         para.paragraph_format.keep_together = False
 
-    def _format_heading(self, para, level, is_from_txt):
-        if self.config['set_outline'] and not is_from_txt:
-            try: para.style = f'Heading {level}'
-            except KeyError:
-                try: para.style = f'标题 {level}'
-                except KeyError: self._log(f"  > 警告: 样式 'Heading {level}' 或 '标题 {level}' 未找到。")
+    def _get_outline_level(self, para):
+        """
+        读取段落的当前大纲级别
+        返回: 0-8 表示级别1-9，None 表示未设置
+        """
+        pPr = para._p.get_or_add_pPr()
+        outlineLvl = pPr.find(qn('w:outlineLvl'))
+        if outlineLvl is not None:
+            val = outlineLvl.get(qn('w:val'))
+            if val is not None:
+                return int(val)
+        return None
+
+    def _set_outline_level(self, para, level):
+        """
+        直接设置段落的大纲级别，不通过样式，不影响字体字号等格式
+        level: 1-9 的整数，表示大纲级别
+        返回: 原有的大纲级别 (0-8) 或 None
+        """
+        if level < 1 or level > 9:
+            self._log(f"  > 警告：大纲级别 {level} 超出范围 (1-9)，已跳过设置")
+            return None
+        
+        # 读取原有大纲级别
+        original_level = self._get_outline_level(para)
+        
+        # 设置新的大纲级别 (Word内部用0-8表示1-9级)
+        pPr = para._p.get_or_add_pPr()
+        outlineLvl = pPr.find(qn('w:outlineLvl'))
+        if outlineLvl is None:
+            outlineLvl = OxmlElement('w:outlineLvl')
+            pPr.append(outlineLvl)
+        outlineLvl.set(qn('w:val'), str(level - 1))
+        
+        return original_level
+
+    def _format_heading(self, para, level):
+        """
+        为段落设置大纲级别（仅设置大纲级别，不影响其他格式）
+        """
+        if not self.config['set_outline']:
+            self._log(f"  > 大纲级别设置已禁用，跳过")
+            return
+        
+        # 获取段落文本预览用于日志
+        text_preview = para.text.strip()[:30].replace("\n", " ")
+        
+        original_level = self._set_outline_level(para, level)
+        
+        if original_level is not None:
+            self._log(f"  > 大纲级别: Lv{original_level + 1} → Lv{level} (覆盖) - \"{text_preview}...\"")
+        else:
+            self._log(f"  > 大纲级别: 无 → Lv{level} (新设) - \"{text_preview}...\"")
 
     def _apply_text_indent_and_align(self, para):
         para.paragraph_format.first_line_indent = None
@@ -257,23 +304,6 @@ class WordProcessor:
         
         doc = Document(processing_path)
         
-        if not is_from_txt:
-            self._log("正在重置标题样式以保留原文粗体/斜体...")
-            for i in range(1, 5):
-                found = False
-                for style_name_tpl in [f'Heading {i}', f'标题 {i}']:
-                    try:
-                        style = doc.styles[style_name_tpl]
-                        style.font.bold = None
-                        style.font.italic = None
-                        self._log(f"  > 样式 '{style_name_tpl}' 的强制粗体/斜体已重置。")
-                        found = True
-                        break 
-                    except KeyError:
-                        continue
-                if not found:
-                    self._log(f"  > 警告: 未找到 Level-{i} 的标题样式，跳过重置。")
-
         all_blocks = list(self._iter_block_items(doc))
         processed_indices = set()
         
@@ -312,6 +342,11 @@ class WordProcessor:
         if title_block_index != -1: processed_indices.add(title_block_index)
 
         self._log("预扫描完成，开始逐段格式化...")
+        if self.config['set_outline']:
+            self._log("【大纲级别设置已启用】")
+        else:
+            self._log("【大纲级别设置已禁用】")
+            
         re_h1 = re.compile(r'^[一二三四五六七八九十百千万零]+\s*、')
         re_h2 = re.compile(r'^[（\(][一二三四五六七八九十百千万零]+[）\)]')
         re_h3 = re.compile(r'^\d+\s*[\.．]')
@@ -393,7 +428,7 @@ class WordProcessor:
                 self._strip_leading_whitespace(para)
                 self._apply_font_to_runs(para, self.config['attachment_font'], self.config['attachment_size'], set_color=apply_color)
                 self._reset_pagination_properties(para)
-                para.paragraph_format.page_break_before = True  # 段前分页
+                para.paragraph_format.page_break_before = True
                 para.paragraph_format.left_indent = Pt(0)
                 para.paragraph_format.first_line_indent = None
                 
@@ -401,7 +436,7 @@ class WordProcessor:
                 ind.set(qn("w:firstLineChars"), "0")
                 
                 para.alignment = WD_ALIGN_PARAGRAPH.LEFT
-                self._format_heading(para, 1, is_from_txt) # 设置大纲级别
+                self._format_heading(para, 1)
 
                 # 查找并格式化附件的标题
                 attachment_title_idx, search_idx = -1, block_idx + 1
@@ -409,7 +444,7 @@ class WordProcessor:
                     next_block = all_blocks[search_idx]
                     if isinstance(next_block, Paragraph) and next_block.text.strip():
                         attachment_title_idx = search_idx; break
-                    elif isinstance(next_block, Table): break # 遇到表格则停止
+                    elif isinstance(next_block, Table): break
                     search_idx += 1
 
                 if attachment_title_idx != -1:
@@ -420,16 +455,18 @@ class WordProcessor:
                     self._apply_font_to_runs(para_title, self.config['title_font'], self.config['title_size'], set_color=apply_color)
                     para_title.alignment, para_title.paragraph_format.first_line_indent = WD_ALIGN_PARAGRAPH.CENTER, None
                     self._reset_pagination_properties(para_title)
-                    self._format_heading(para_title, 1, is_from_txt) # 设置大纲级别
+                    self._format_heading(para_title, 1)
                 
-                # 更新 block_idx 以跳过已处理的附件标题
                 block_idx = (attachment_title_idx + 1) if attachment_title_idx != -1 else search_idx
                 continue
             
             elif re_h1.match(text_to_check):
                 self._log(f"段落 {current_block_num}: 一级标题 - \"{para_text_preview}...\"")
-                self._strip_leading_whitespace(para); self._format_heading(para, 1, is_from_txt)
-                self._apply_font_to_runs(para, self.config['h1_font'], self.config['h1_size'], set_color=apply_color); self._apply_text_indent_and_align(para); self._reset_pagination_properties(para)
+                self._strip_leading_whitespace(para)
+                self._format_heading(para, 1)
+                self._apply_font_to_runs(para, self.config['h1_font'], self.config['h1_size'], set_color=apply_color)
+                self._apply_text_indent_and_align(para)
+                self._reset_pagination_properties(para)
 
             elif re_h2.match(text_to_check):
                 self._log(f"段落 {current_block_num}: 二级标题 - \"{para_text_preview}...\"")
@@ -486,7 +523,7 @@ class WordProcessor:
                         
                         char_count = run_end_pos
                     
-                    self._format_heading(para, 2, is_from_txt)
+                    self._format_heading(para, 2)
                     self._apply_text_indent_and_align(para)
                     self._reset_pagination_properties(para)
 
@@ -495,41 +532,55 @@ class WordProcessor:
                     if match and not (text_to_check.startswith('（') and text_to_check.strip().endswith('）')):
                         self._log("  > 已将二级标题的括号统一为中文括号。")
                         for r in para.runs: r.text = r.text.replace('(', '（', 1).replace(')', '）', 1)
-                    self._format_heading(para, 2, is_from_txt)
+                    self._format_heading(para, 2)
                     self._apply_font_to_runs(para, self.config['h2_font'], self.config['h2_size'], set_color=apply_color)
-                    self._apply_text_indent_and_align(para); self._reset_pagination_properties(para)
+                    self._apply_text_indent_and_align(para)
+                    self._reset_pagination_properties(para)
                     
             elif re_h3.match(text_to_check):
                 self._log(f"段落 {current_block_num}: 三级标题 - \"{para_text_preview}...\"")
-                self._strip_leading_whitespace(para); self._format_heading(para, 3, is_from_txt)
-                self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color); self._apply_text_indent_and_align(para); self._reset_pagination_properties(para)
+                self._strip_leading_whitespace(para)
+                self._format_heading(para, 3)
+                self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
+                self._apply_text_indent_and_align(para)
+                self._reset_pagination_properties(para)
+                
             elif re_h4.match(text_to_check):
                 self._log(f"段落 {current_block_num}: 四级标题 - \"{para_text_preview}...\"")
-                self._strip_leading_whitespace(para); self._format_heading(para, 4, is_from_txt)
-                self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color); self._apply_text_indent_and_align(para); self._reset_pagination_properties(para)
+                self._strip_leading_whitespace(para)
+                self._format_heading(para, 4)
+                self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
+                self._apply_text_indent_and_align(para)
+                self._reset_pagination_properties(para)
+                
             elif not is_from_txt:
                 if para.alignment in [WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.RIGHT]:
                     align_text = "居中" if para.alignment == WD_ALIGN_PARAGRAPH.CENTER else "右对齐"
                     self._log(f"段落 {current_block_num}: {align_text}正文 - 保留原对齐")
-                    self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color); self._reset_pagination_properties(para)
+                    self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
+                    self._reset_pagination_properties(para)
                 elif leading_space_count > 5:
                     self._log(f"段落 {current_block_num}: 正文 (保留前导空格) - \"{para_text_preview}...\"")
                     self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
-                    para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; self._reset_pagination_properties(para)
+                    para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                    self._reset_pagination_properties(para)
                 elif (para.paragraph_format.first_line_indent is None or para.paragraph_format.first_line_indent.pt == 0) and leading_space_count == 0:
                     self._log(f"段落 {current_block_num}: 正文 (保留0缩进) - \"{para_text_preview}...\"")
                     self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
-                    para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY; self._reset_pagination_properties(para)
+                    para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+                    self._reset_pagination_properties(para)
                 else:
                     self._log(f"段落 {current_block_num}: 正文 (应用标准缩进) - \"{para_text_preview}...\"")
                     self._strip_leading_whitespace(para)
                     self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
-                    self._apply_text_indent_and_align(para); self._reset_pagination_properties(para)
+                    self._apply_text_indent_and_align(para)
+                    self._reset_pagination_properties(para)
             else:
                 self._log(f"段落 {current_block_num}: 正文 (源自TXT，强制缩进) - \"{para_text_preview}...\"")
                 self._strip_leading_whitespace(para)
                 self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
-                self._apply_text_indent_and_align(para); self._reset_pagination_properties(para)
+                self._apply_text_indent_and_align(para)
+                self._reset_pagination_properties(para)
             
             block_idx += 1
         
@@ -541,7 +592,7 @@ class WordProcessor:
 class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
-        master.title("Word文档智能排版工具 v2.6.0")
+        master.title("Word文档智能排版工具 v2.6.1")
         master.geometry("1200x800")
 
         self.font_size_map = {
@@ -670,7 +721,7 @@ class WordFormatterGUI:
         create_combo("附件标识字体", 'attachment_font', self.font_options['attachment'], row, 2, readonly=False); 
         create_font_size_combo("附件标识字号", 'attachment_size', row, 4); row+=1
         
-        ttk.Checkbutton(params_frame, text="自动设置大纲级别 (对非TXT源文件)", variable=self.set_outline_var).grid(row=row, columnspan=6, pady=5); row+=1
+        ttk.Checkbutton(params_frame, text="自动设置大纲级别", variable=self.set_outline_var).grid(row=row, columnspan=6, pady=5); row+=1
         
         log_frame = ttk.LabelFrame(right_frame, text="调试日志")
         log_frame.pack(fill=tk.BOTH, expand=True, pady=5)
@@ -843,7 +894,7 @@ class WordFormatterGUI:
         help_text_widget = scrolledtext.ScrolledText(help_win, wrap=tk.WORD, state='disabled')
         help_text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         help_content = """
-Word文档智能排版工具 v2.6.0 - 使用说明
+Word文档智能排版工具 v2.6.1 - 使用说明
 
 本工具旨在提供一键式的专业文档排版体验，支持批量处理和高度自定义。
 

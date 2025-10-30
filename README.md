@@ -107,6 +107,10 @@ A：本程序使用 PyInstaller 打包为 `.exe`，部分杀毒软件可能会�
 
 ## 版本更新记录
 
+### v2.6.3
+
+*   **优化 UI界面**：部分用户反馈，操作系统设置了125%文本后，按钮显示不全，根据反馈修改了页面布局。如v2.6.2显示无问题可不用更新。
+
 ### v2.6.2
 
 *   **新增 多行标题、副标题识别**：识别多行标题、副标题，并设置字体、字号、行距。
@@ -145,6 +149,7 @@ A：本程序使用 PyInstaller 打包为 `.exe`，部分杀毒软件可能会�
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)](https://www.star-history.com/#cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)
+
 
 
 

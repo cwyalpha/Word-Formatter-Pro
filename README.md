@@ -107,6 +107,13 @@ A：本程序使用 PyInstaller 打包为 `.exe`，部分杀毒软件可能会�
 
 ## 版本更新记录
 
+### v2.6.4
+
+*   **修正直接文本输入的纸张大小**：现在使用“直接输入文本”功能生成的文档，会强制默认使用 **A4** 纸张（之前默认为 Letter 信纸）。
+*   **新增“强制设置为A4纸张”选项**：在“页面设置”区域增加了一个复选框。
+    *   如果不勾选（默认）：处理现有的 Word/WPS 文件时，保持原文档的纸张大小不变。
+    *   如果勾选：处理所有文件时，强制将纸张大小修改为 A4。
+
 ### v2.6.3
 
 *   **优化 UI界面**：部分用户反馈，操作系统设置了125%文本后，按钮显示不全，根据反馈修改了页面布局。如v2.6.2显示无问题可不用更新。
@@ -149,6 +156,7 @@ A：本程序使用 PyInstaller 打包为 `.exe`，部分杀毒软件可能会�
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)](https://www.star-history.com/#cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)
+
 
 
 

@@ -149,14 +149,24 @@ class WordProcessor:
         run_field._r.extend([fldChar1, instrText, fldChar2])
         self._set_run_font(paragraph.add_run(' —'), font_name, font_size, set_color=True)
 
-    def _apply_page_setup(self, doc):
+    def _apply_page_setup(self, doc, is_from_txt=False):
         self._log("正在应用页面边距和页码设置...")
+        
+        # 判断是否需要强制设置A4纸
+        # 逻辑：如果是纯文本来源（包括直接输入）或者 用户勾选了强制A4，则设置为A4
+        should_set_a4 = is_from_txt or self.config.get('force_a4', False)
+
         for section in doc.sections:
             section.top_margin = Cm(self.config['margin_top'])
             section.bottom_margin = Cm(self.config['margin_bottom'])
             section.left_margin = Cm(self.config['margin_left'])
             section.right_margin = Cm(self.config['margin_right'])
             section.footer_distance = Cm(self.config['footer_distance'])
+
+            # 设置纸张大小为A4 (仅在需要时)
+            if should_set_a4:
+                section.page_width = Cm(21)
+                section.page_height = Cm(29.7)
 
             if self.config['page_number_align'] == '居中':
                 p = section.footer.paragraphs[0] if section.footer.paragraphs else section.footer.add_paragraph()
@@ -170,6 +180,9 @@ class WordProcessor:
                 footer_even = section.even_page_footer
                 p_even = footer_even.paragraphs[0] if footer_even.paragraphs else footer_even.add_paragraph()
                 p_even.clear(); p_even.alignment = WD_ALIGN_PARAGRAPH.LEFT; self._create_page_number(p_even, 'PAGE')
+        
+        if should_set_a4:
+            self._log("  > 已将页面大小设置为 A4。")
 
     def _set_run_font(self, run, font_name, size_pt, set_color=False):
         run.font.name = font_name
@@ -804,7 +817,7 @@ class WordProcessor:
             
             block_idx += 1
         
-        self._apply_page_setup(doc)
+        self._apply_page_setup(doc, is_from_txt=is_from_txt)
         self._log("正在保存最终文档...")
         doc.save(output_path)
 
@@ -812,7 +825,7 @@ class WordProcessor:
 class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
-        master.title("Word文档智能排版工具 v2.6.3")
+        master.title("Word文档智能排版工具 v2.6.4")
         master.geometry("1200x800")
 
         self.font_size_map = {
@@ -833,7 +846,8 @@ class WordFormatterGUI:
             'subtitle_size': 16,
             'title_line_spacing': 33, 'subtitle_line_spacing': 33,
             'left_indent_cm': 0.0, 'right_indent_cm': 0.0,
-            'set_outline': True, 'enable_attachment_formatting': True
+            'set_outline': True, 'enable_attachment_formatting': True,
+            'force_a4': False
         }
         self.font_options = {
             'title': ['方正小标宋简体', '方正小标宋_GBK', '华文中宋'], 'h1': ['黑体', '方正黑体_GBK', '方正黑体简体', '华文黑体'],
@@ -844,6 +858,7 @@ class WordFormatterGUI:
         }
         self.set_outline_var = tk.BooleanVar(value=self.default_params['set_outline'])
         self.enable_attachment_var = tk.BooleanVar(value=self.default_params['enable_attachment_formatting'])
+        self.force_a4_var = tk.BooleanVar(value=self.default_params['force_a4'])
         self.entries = {}
         
         self.default_config_path = "default_config.json"
@@ -988,6 +1003,7 @@ class WordFormatterGUI:
         row += 1
         create_entry("左边距(cm)", 'margin_left', row, 0)
         create_entry("右边距(cm)", 'margin_right', row, 2)
+        ttk.Checkbutton(params_frame, text="强制设置为A4纸张", variable=self.force_a4_var).grid(row=row, column=4, columnspan=2, sticky=tk.W, padx=3)
         row += 1
         create_combo("页码对齐", 'page_number_align', ['奇偶分页', '居中'], row, 0)
         create_combo("页码字体", 'page_number_font', self.font_options['page_number'], row, 2, readonly=False)
@@ -1103,8 +1119,9 @@ class WordFormatterGUI:
     def _apply_config(self, loaded_config):
         self.set_outline_var.set(loaded_config.get('set_outline', True))
         self.enable_attachment_var.set(loaded_config.get('enable_attachment_formatting', True))
+        self.force_a4_var.set(loaded_config.get('force_a4', False))
         for key, value in loaded_config.items():
-            if key in ['set_outline', 'enable_attachment_formatting']: continue
+            if key in ['set_outline', 'enable_attachment_formatting', 'force_a4']: continue
             widget = self.entries.get(key)
             if widget:
                 if "_size" in key:
@@ -1136,6 +1153,7 @@ class WordFormatterGUI:
                 except (ValueError, TypeError): config[key] = value
         config['set_outline'] = self.set_outline_var.get()
         config['enable_attachment_formatting'] = self.enable_attachment_var.get()
+        config['force_a4'] = self.force_a4_var.get()
         return config
 
     def save_config(self):
@@ -1227,13 +1245,13 @@ class WordFormatterGUI:
         help_text_widget = scrolledtext.ScrolledText(help_win, wrap=tk.WORD, state='disabled')
         help_text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         help_content = """
-Word文档智能排版工具 v2.6.3 - 使用说明
+Word文档智能排版工具 v2.6.4 - 使用说明
 
 本工具旨在提供一键式的专业文档排版体验，支持批量处理和高度自定义。
 
 【核心功能模式】
 1. 文件批量处理：可拖拽或添加 .docx, .doc, .wps, .txt 文件。
-2. 直接输入文本：直接粘贴文本进行排版。
+2. 直接输入文本：直接粘贴文本进行排版（自动强制使用A4纸张）。
 
 【操作流程】
 1. 选择模式并添加内容。
@@ -1258,6 +1276,7 @@ Word文档智能排版工具 v2.6.3 - 使用说明
   • 附件标识: 识别“附件1”、“附件：”等独立段落。启用附件格式化后，将自动【段前分页】并按主副标题规则识别其自身标题。
 
 【其他特性】
+- 纸张设置：直接输入文本默认使用A4纸。文件处理默认保持原样，可勾选“强制设置为A4纸张”进行修改。
 - 保留原文格式：统一格式时，会保留【加粗、斜体、下划线、字体颜色】等。
 - 二级标题智能拆分：若二级标题后紧跟正文（如"（一）标题。正文..."），会自动在【同一个段落内】为标题和正文应用不同格式。
 - 豁免内容：表格、图片、嵌入对象等内容会自动跳过格式化。

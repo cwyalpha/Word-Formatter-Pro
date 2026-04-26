@@ -568,6 +568,8 @@ class WordProcessor:
         if set_color: run.font.color.rgb = RGBColor(0, 0, 0)
         rPr = run._r.get_or_add_rPr()
         rFonts = rPr.get_or_add_rFonts()
+        for theme_attr in ('w:eastAsiaTheme', 'w:asciiTheme', 'w:hAnsiTheme', 'w:cstheme', 'w:csTheme'):
+            rFonts.attrib.pop(qn(theme_attr), None)
         rFonts.set(qn('w:eastAsia'), font_name)
         # 根据配置决定西文字体（数字、字母）
         en_font = self.config.get('english_font') if self.config.get('use_custom_english_font', False) else font_name
@@ -1492,7 +1494,7 @@ class WordProcessor:
 class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
-        master.title("Word文档智能排版工具 v2.6.8")
+        master.title("Word文档智能排版工具 v2.6.9")
         master.geometry("1200x860")
         master.minsize(1200, 860)
 
@@ -2134,7 +2136,7 @@ class WordFormatterGUI:
         help_text_widget = scrolledtext.ScrolledText(help_win, wrap=tk.WORD, state='disabled')
         help_text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         help_content = """
-Word文档智能排版工具 v2.6.8 - 使用说明
+Word文档智能排版工具 v2.6.9 - 使用说明
 
 本工具旨在提供一键式的专业文档排版体验，支持批量处理和高度自定义。
 

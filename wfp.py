@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, scrolledtext, Menu
+from tkinter import ttk, filedialog, messagebox, scrolledtext, Menu, font as tkfont
 import json
 import os
 import re
@@ -570,7 +570,8 @@ class WordProcessor:
         rFonts = rPr.get_or_add_rFonts()
         rFonts.set(qn('w:eastAsia'), font_name)
         # 根据配置决定西文字体（数字、字母）
-        en_font = 'Times New Roman' if self.config.get('use_times_new_roman', False) else font_name
+        en_font = self.config.get('english_font') if self.config.get('use_custom_english_font', False) else font_name
+        en_font = en_font or font_name
         run.font.name = en_font
         rFonts.set(qn('w:ascii'), en_font)
         rFonts.set(qn('w:hAnsi'), en_font)
@@ -1491,7 +1492,7 @@ class WordProcessor:
 class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
-        master.title("Word文档智能排版工具 v2.6.7")
+        master.title("Word文档智能排版工具 v2.6.8")
         master.geometry("1200x860")
         master.minsize(1200, 860)
 
@@ -1514,7 +1515,7 @@ class WordFormatterGUI:
             'title_line_spacing': 33, 'subtitle_line_spacing': 33,
             'left_indent_cm': 0.0, 'right_indent_cm': 0.0,
             'set_outline': True, 'enable_attachment_formatting': True,
-            'force_a4': False, 'use_times_new_roman': False,
+            'force_a4': False, 'use_custom_english_font': False, 'english_font': 'Times New Roman',
             'remove_blank_lines': True, 'normalize_punctuation': False,
             'enable_table_formatting': False, 'table_header_font': '仿宋_GB2312',
             'table_font': '仿宋_GB2312',
@@ -1523,18 +1524,25 @@ class WordFormatterGUI:
             'table_header_bold': True, 'table_smart_align': False,
             'table_unified_borders': True, 'table_border_size_pt': 0.5
         }
-        self.font_options = {
+        self.font_separator = '── 已安装字体 ──'
+        self.installed_fonts = self._get_installed_fonts()
+        preset_font_options = {
             'title': ['方正小标宋简体', '方正小标宋_GBK', '华文中宋'], 'h1': ['黑体', '方正黑体_GBK', '方正黑体简体', '华文黑体'],
             'h2': ['楷体_GB2312', '方正楷体_GBK', '楷体', '方正楷体简体', '华文楷体'],
             'body': ['仿宋_GB2312', '方正仿宋_GBK', '仿宋', '方正仿宋简体', '华文仿宋'], 'page_number': ['宋体', 'Times New Roman'],
             'table_caption': ['黑体', '宋体', '仿宋_GB2312'], 'figure_caption': ['黑体', '宋体', '仿宋_GB2312'], 'attachment': ['黑体', '宋体', '仿宋_GB2312'],
             'subtitle': ['楷体_GB2312', '方正楷体_GBK', '楷体', '方正楷体简体', '华文楷体'],
-            'table': ['仿宋_GB2312', '宋体', '黑体', '楷体_GB2312', '方正仿宋_GBK', '仿宋']
+            'table': ['仿宋_GB2312', '宋体', '黑体', '楷体_GB2312', '方正仿宋_GBK', '仿宋'],
+            'english': ['Times New Roman']
+        }
+        self.font_options = {
+            key: self._with_installed_fonts(options)
+            for key, options in preset_font_options.items()
         }
         self.set_outline_var = tk.BooleanVar(value=self.default_params['set_outline'])
         self.enable_attachment_var = tk.BooleanVar(value=self.default_params['enable_attachment_formatting'])
         self.force_a4_var = tk.BooleanVar(value=self.default_params['force_a4'])
-        self.use_times_new_roman_var = tk.BooleanVar(value=self.default_params['use_times_new_roman'])
+        self.use_custom_english_font_var = tk.BooleanVar(value=self.default_params['use_custom_english_font'])
         self.remove_blank_lines_var = tk.BooleanVar(value=self.default_params['remove_blank_lines'])
         self.normalize_punctuation_var = tk.BooleanVar(value=self.default_params['normalize_punctuation'])
         self.enable_table_var = tk.BooleanVar(value=self.default_params['enable_table_formatting'])
@@ -1543,6 +1551,8 @@ class WordFormatterGUI:
         self.table_smart_align_var = tk.BooleanVar(value=self.default_params['table_smart_align'])
         self.table_unified_borders_var = tk.BooleanVar(value=self.default_params['table_unified_borders'])
         self.entries = {}
+        self.attachment_option_widgets = []
+        self.table_option_widgets = []
         
         self.default_config_path = "default_config.json"
         
@@ -1551,6 +1561,95 @@ class WordFormatterGUI:
         self.load_initial_config()
 
         self.master.after(250, self.set_initial_pane_position)
+
+    def _get_installed_fonts(self):
+        try:
+            fonts = tkfont.families(self.master)
+        except tk.TclError:
+            return []
+
+        unique_fonts = {
+            font.strip()
+            for font in fonts
+            if font and font.strip() and not font.strip().startswith('@')
+        }
+        return sorted(unique_fonts, key=str.casefold)
+
+    def _with_installed_fonts(self, preset_fonts):
+        options = []
+        seen = set()
+        for font in preset_fonts:
+            normalized = font.casefold()
+            if normalized not in seen:
+                options.append(font)
+                seen.add(normalized)
+
+        installed_fonts = [
+            font for font in self.installed_fonts
+            if font.casefold() not in seen
+        ]
+        if installed_fonts:
+            options.append(self.font_separator)
+            options.extend(installed_fonts)
+        return options
+
+    def _update_english_font_state(self):
+        combo = self.entries.get('english_font')
+        if combo:
+            combo.configure(state='normal' if self.use_custom_english_font_var.get() else 'disabled')
+
+    def _set_widgets_enabled(self, widgets, enabled):
+        for widget in widgets:
+            if not hasattr(widget, '_enabled_state'):
+                try:
+                    enabled_state = widget.cget('state') or 'normal'
+                    widget._enabled_state = 'normal' if enabled_state == 'disabled' else enabled_state
+                except tk.TclError:
+                    widget._enabled_state = 'normal'
+            try:
+                widget.configure(state=widget._enabled_state if enabled else 'disabled')
+            except tk.TclError:
+                pass
+
+    def _update_attachment_state(self):
+        self._set_widgets_enabled(self.attachment_option_widgets, self.enable_attachment_var.get())
+
+    def _update_table_state(self):
+        self._set_widgets_enabled(self.table_option_widgets, self.enable_table_var.get())
+
+    def _enable_dependent_widgets_for_config_load(self):
+        self._set_widgets_enabled(self.attachment_option_widgets, True)
+        self._set_widgets_enabled(self.table_option_widgets, True)
+        english_font_combo = self.entries.get('english_font')
+        if english_font_combo:
+            english_font_combo.configure(state='normal')
+
+    def _set_widget_value(self, widget, value, is_size=False):
+        previous_state = None
+        try:
+            previous_state = widget.cget('state')
+            if previous_state == 'disabled':
+                widget.configure(state=getattr(widget, '_enabled_state', 'normal'))
+        except tk.TclError:
+            previous_state = None
+
+        try:
+            if is_size and isinstance(widget, ttk.Combobox):
+                display_val = self.font_size_map_rev.get(value, str(value))
+                widget.set(display_val)
+            elif isinstance(widget, ttk.Combobox):
+                widget.set(value)
+                if value != self.font_separator:
+                    widget._last_valid_value = value
+            else:
+                widget.delete(0, tk.END)
+                widget.insert(0, str(value))
+        finally:
+            if previous_state == 'disabled':
+                try:
+                    widget.configure(state='disabled')
+                except tk.TclError:
+                    pass
 
     def set_initial_pane_position(self):
         # 获取窗口总宽度，设置左侧占约30%
@@ -1667,6 +1766,22 @@ class WordFormatterGUI:
             state = 'readonly' if readonly else 'normal'
             combo = ttk.Combobox(params_frame, values=opts, state=state, width=15)
             combo.grid(row=r, column=c+1, sticky=tk.EW, padx=3, pady=2)
+            if self.font_separator in opts:
+                combo._last_valid_value = ''
+
+                def remember_font_value(event, combo=combo):
+                    current = combo.get().strip()
+                    if current and current != self.font_separator:
+                        combo._last_valid_value = current
+
+                def reject_font_separator(event, combo=combo):
+                    if combo.get() == self.font_separator:
+                        combo.set(getattr(combo, '_last_valid_value', ''))
+                    else:
+                        remember_font_value(event, combo)
+
+                combo.bind("<FocusIn>", remember_font_value, add="+")
+                combo.bind("<<ComboboxSelected>>", reject_font_separator, add="+")
             self.entries[var_name] = combo
             return combo
 
@@ -1676,7 +1791,7 @@ class WordFormatterGUI:
             combo.grid(row=r, column=c+1, sticky=tk.EW, padx=3, pady=2)
             self.entries[var_name] = combo
             return combo
-        
+
         def create_section_header(text, help_text, r):
             header_frame = ttk.Frame(params_frame)
             header_frame.grid(row=r, column=0, columnspan=6, sticky='ew', pady=(6, 2))
@@ -1740,21 +1855,32 @@ class WordFormatterGUI:
             "• 默认保留单元格原始对齐方式；勾选智能对齐后，表头/序号/短文本居中，数字靠右，长文本靠左。"
         )
         row = create_section_header("表格内容（实验功能）", table_help, row)
-        ttk.Checkbutton(params_frame, text="启用表格自动调整（总开关）", variable=self.enable_table_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=3, pady=2)
-        ttk.Checkbutton(params_frame, text="自动调整列宽", variable=self.table_auto_col_width_var).grid(row=row, column=2, columnspan=2, sticky=tk.W, padx=3, pady=2)
-        ttk.Checkbutton(params_frame, text="统一表格边框", variable=self.table_unified_borders_var).grid(row=row, column=4, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        ttk.Checkbutton(params_frame, text="启用表格自动调整（总开关）", variable=self.enable_table_var, command=self._update_table_state).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        table_auto_col_width_check = ttk.Checkbutton(params_frame, text="自动调整列宽", variable=self.table_auto_col_width_var)
+        table_auto_col_width_check.grid(row=row, column=2, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        table_unified_borders_check = ttk.Checkbutton(params_frame, text="统一表格边框", variable=self.table_unified_borders_var)
+        table_unified_borders_check.grid(row=row, column=4, columnspan=2, sticky=tk.W, padx=3, pady=2)
         row += 1
-        create_combo("表头字体", 'table_header_font', self.font_options['table'], row, 0, readonly=False)
-        create_combo("表格字体", 'table_font', self.font_options['table'], row, 2, readonly=False)
-        create_font_size_combo("表格字号", 'table_size', row, 4)
+        table_header_font_combo = create_combo("表头字体", 'table_header_font', self.font_options['table'], row, 0, readonly=False)
+        table_font_combo = create_combo("表格字体", 'table_font', self.font_options['table'], row, 2, readonly=False)
+        table_size_combo = create_font_size_combo("表格字号", 'table_size', row, 4)
         row += 1
-        create_entry("表格行距(磅)", 'table_line_spacing', row, 0)
-        create_entry("表格行高(cm)", 'table_row_height_cm', row, 2)
-        create_entry("表格宽度(%)", 'table_width_percent', row, 4)
+        table_line_spacing_entry = create_entry("表格行距(磅)", 'table_line_spacing', row, 0)
+        table_row_height_entry = create_entry("表格行高(cm)", 'table_row_height_cm', row, 2)
+        table_width_percent_entry = create_entry("表格宽度(%)", 'table_width_percent', row, 4)
         row += 1
-        create_entry("边框粗细(pt)", 'table_border_size_pt', row, 0)
-        ttk.Checkbutton(params_frame, text="表头行加粗", variable=self.table_header_bold_var).grid(row=row, column=2, columnspan=2, sticky=tk.W, padx=3, pady=2)
-        ttk.Checkbutton(params_frame, text="智能调整单元格对齐", variable=self.table_smart_align_var).grid(row=row, column=4, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        table_border_size_entry = create_entry("边框粗细(pt)", 'table_border_size_pt', row, 0)
+        table_header_bold_check = ttk.Checkbutton(params_frame, text="表头行加粗", variable=self.table_header_bold_var)
+        table_header_bold_check.grid(row=row, column=2, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        table_smart_align_check = ttk.Checkbutton(params_frame, text="智能调整单元格对齐", variable=self.table_smart_align_var)
+        table_smart_align_check.grid(row=row, column=4, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        self.table_option_widgets = [
+            table_auto_col_width_check, table_unified_borders_check,
+            table_header_font_combo, table_font_combo, table_size_combo,
+            table_line_spacing_entry, table_row_height_entry, table_width_percent_entry,
+            table_border_size_entry, table_header_bold_check, table_smart_align_check
+        ]
+        self._update_table_state()
         row += 1
         
         # Section: Other Elements
@@ -1766,9 +1892,11 @@ class WordFormatterGUI:
         create_combo("图形标题字体", 'figure_caption_font', self.font_options['figure_caption'], row, 0, readonly=False)
         create_font_size_combo("图形标题字号", 'figure_caption_size', row, 2)
         row += 1
-        ttk.Checkbutton(params_frame, text="启用附件格式化", variable=self.enable_attachment_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=3, pady=2)
-        create_combo("附件标识字体", 'attachment_font', self.font_options['attachment'], row, 2, readonly=False)
-        create_font_size_combo("附件标识字号", 'attachment_size', row, 4)
+        ttk.Checkbutton(params_frame, text="启用附件格式化", variable=self.enable_attachment_var, command=self._update_attachment_state).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        attachment_font_combo = create_combo("附件标识字体", 'attachment_font', self.font_options['attachment'], row, 2, readonly=False)
+        attachment_size_combo = create_font_size_combo("附件标识字号", 'attachment_size', row, 4)
+        self.attachment_option_widgets = [attachment_font_combo, attachment_size_combo]
+        self._update_attachment_state()
         row += 1
 
         # Section: Global Options
@@ -1776,7 +1904,14 @@ class WordFormatterGUI:
         row += 1
         ttk.Checkbutton(params_frame, text="自动设置大纲级别 (用于生成导航目录)", variable=self.set_outline_var).grid(row=row, columnspan=6, sticky=tk.W, padx=3)
         row += 1
-        ttk.Checkbutton(params_frame, text="数字和字母使用 Times New Roman 字体", variable=self.use_times_new_roman_var).grid(row=row, columnspan=6, sticky=tk.W, padx=3)
+        ttk.Checkbutton(
+            params_frame,
+            text="自定义数字和字母字体",
+            variable=self.use_custom_english_font_var,
+            command=self._update_english_font_state
+        ).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=3)
+        create_combo("数字和字母字体", 'english_font', self.font_options['english'], row, 2, readonly=False)
+        self._update_english_font_state()
         row += 1
         ttk.Checkbutton(params_frame, text="删除 TXT/MD 文件中的空行 (单个空行删除，连续多个合并为1个)", variable=self.remove_blank_lines_var).grid(row=row, columnspan=6, sticky=tk.W, padx=3)
         row += 1
@@ -1837,11 +1972,19 @@ class WordFormatterGUI:
             self.load_defaults()
 
     def _apply_config(self, loaded_config):
+        loaded_config = dict(loaded_config)
+        if 'use_custom_english_font' not in loaded_config and loaded_config.get('use_times_new_roman'):
+            loaded_config['use_custom_english_font'] = True
+            loaded_config.setdefault('english_font', 'Times New Roman')
         loaded_config = {**self.default_params, **loaded_config}
+        for key, default_value in self.default_params.items():
+            value = loaded_config.get(key)
+            if value is None or (isinstance(value, str) and not value.strip()):
+                loaded_config[key] = default_value
         self.set_outline_var.set(loaded_config.get('set_outline', True))
         self.enable_attachment_var.set(loaded_config.get('enable_attachment_formatting', True))
         self.force_a4_var.set(loaded_config.get('force_a4', False))
-        self.use_times_new_roman_var.set(loaded_config.get('use_times_new_roman', False))
+        self.use_custom_english_font_var.set(loaded_config.get('use_custom_english_font', False))
         self.remove_blank_lines_var.set(loaded_config.get('remove_blank_lines', True))
         self.normalize_punctuation_var.set(loaded_config.get('normalize_punctuation', False))
         self.enable_table_var.set(loaded_config.get('enable_table_formatting', False))
@@ -1851,22 +1994,20 @@ class WordFormatterGUI:
         self.table_unified_borders_var.set(loaded_config.get('table_unified_borders', True))
         boolean_keys = [
             'set_outline', 'enable_attachment_formatting', 'force_a4',
-            'use_times_new_roman', 'remove_blank_lines', 'normalize_punctuation',
+            'use_custom_english_font', 'use_times_new_roman',
+            'remove_blank_lines', 'normalize_punctuation',
             'enable_table_formatting', 'table_auto_col_width', 'table_header_bold',
             'table_smart_align', 'table_unified_borders'
         ]
+        self._enable_dependent_widgets_for_config_load()
         for key, value in loaded_config.items():
             if key in boolean_keys: continue
             widget = self.entries.get(key)
             if widget:
-                if "_size" in key and isinstance(widget, ttk.Combobox):
-                    display_val = self.font_size_map_rev.get(value, str(value))
-                    widget.set(display_val)
-                elif isinstance(widget, ttk.Combobox):
-                    widget.set(value)
-                else:
-                    widget.delete(0, tk.END)
-                    widget.insert(0, str(value))
+                self._set_widget_value(widget, value, is_size=("_size" in key))
+        self._update_english_font_state()
+        self._update_attachment_state()
+        self._update_table_state()
 
     def load_defaults(self):
         self._apply_config(self.default_params)
@@ -1875,6 +2016,11 @@ class WordFormatterGUI:
         config = {}
         for key, widget in self.entries.items():
             value = widget.get().strip()
+            if isinstance(widget, ttk.Combobox) and value == self.font_separator:
+                value = getattr(widget, '_last_valid_value', '').strip()
+            if value == '' and key in self.default_params:
+                config[key] = self.default_params[key]
+                continue
             if "_size" in key and isinstance(widget, ttk.Combobox):
                 if value in self.font_size_map:
                     config[key] = self.font_size_map[value]
@@ -1889,7 +2035,7 @@ class WordFormatterGUI:
         config['set_outline'] = self.set_outline_var.get()
         config['enable_attachment_formatting'] = self.enable_attachment_var.get()
         config['force_a4'] = self.force_a4_var.get()
-        config['use_times_new_roman'] = self.use_times_new_roman_var.get()
+        config['use_custom_english_font'] = self.use_custom_english_font_var.get()
         config['remove_blank_lines'] = self.remove_blank_lines_var.get()
         config['normalize_punctuation'] = self.normalize_punctuation_var.get()
         config['enable_table_formatting'] = self.enable_table_var.get()
@@ -1988,7 +2134,7 @@ class WordFormatterGUI:
         help_text_widget = scrolledtext.ScrolledText(help_win, wrap=tk.WORD, state='disabled')
         help_text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         help_content = """
-Word文档智能排版工具 v2.6.7 - 使用说明
+Word文档智能排版工具 v2.6.8 - 使用说明
 
 本工具旨在提供一键式的专业文档排版体验，支持批量处理和高度自定义。
 

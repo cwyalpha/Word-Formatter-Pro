@@ -9,7 +9,8 @@ import win32com.client
 import tempfile
 from docx import Document
 from docx.shared import Pt, Cm, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
+from docx.enum.table import WD_ROW_HEIGHT_RULE
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 
@@ -24,11 +25,12 @@ from tkinterdnd2 import DND_FILES, TkinterDnD
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 class WordProcessor:
-    def __init__(self, config, log_callback=None):
+    def __init__(self, config, log_callback=None, remove_blank_lines=True):
         self.config = config
         self.temp_files = []
         self.log_callback = log_callback
         self.com_app = None
+        self.remove_blank_lines = remove_blank_lines
 
     def _log(self, message):
         if self.log_callback: self.log_callback(message)
@@ -66,9 +68,376 @@ class WordProcessor:
             self.com_app = None
             self._log("  > 应用已关闭。")
 
+    # ------------------------------------------------------------------
+    # Conservative Chinese punctuation normalization
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _has_chinese(text):
+        return bool(re.search(r'[\u4e00-\u9fff]', text or ''))
+
+    @staticmethod
+    def _is_digit_or_latin(ch):
+        if not ch:
+            return False
+        code = ord(ch)
+        return (
+            ch.isdigit()
+            or ('A' <= ch <= 'Z')
+            or ('a' <= ch <= 'z')
+            or (0xFF10 <= code <= 0xFF19)
+            or (0xFF21 <= code <= 0xFF3A)
+            or (0xFF41 <= code <= 0xFF5A)
+        )
+
+    @staticmethod
+    def _prev_non_space(text, index):
+        i = index - 1
+        while i >= 0 and text[i].isspace():
+            i -= 1
+        return text[i] if i >= 0 else ''
+
+    @staticmethod
+    def _next_non_space(text, index):
+        i = index + 1
+        while i < len(text) and text[i].isspace():
+            i += 1
+        return text[i] if i < len(text) else ''
+
+    @classmethod
+    def _is_after_digit_or_latin(cls, text, index):
+        return cls._is_digit_or_latin(cls._prev_non_space(text, index))
+
+    @classmethod
+    def _is_before_digit_or_latin(cls, text, index):
+        return cls._is_digit_or_latin(cls._next_non_space(text, index))
+
+    @classmethod
+    def _normalize_ellipsis(cls, text):
+        dot_chars = {'.', '\uff0e', '\u3002'}
+        chars = []
+        i = 0
+        while i < len(text):
+            ch = text[i]
+            if ch not in dot_chars:
+                chars.append(ch)
+                i += 1
+                continue
+
+            j = i + 1
+            while j < len(text) and text[j] in dot_chars:
+                j += 1
+
+            if j - i >= 3 and not cls._is_after_digit_or_latin(text, i):
+                chars.append('\u2026\u2026')
+            else:
+                chars.append(text[i:j])
+            i = j
+
+        return ''.join(chars)
+
+    @classmethod
+    def _normalize_simple_punctuation(cls, text):
+        replacements = {
+            ',': '\uff0c',
+            '.': '\u3002',
+            '\uff0e': '\u3002',
+            ';': '\uff1b',
+            ':': '\uff1a',
+            '?': '\uff1f',
+            '!': '\uff01',
+        }
+        chars = list(text)
+        for i, ch in enumerate(chars):
+            if ch not in replacements:
+                continue
+            if ch in {'.', '\uff0e', '\u3002'}:
+                prev_is_dot = i > 0 and text[i - 1] in {'.', '\uff0e', '\u3002'}
+                next_is_dot = i + 1 < len(text) and text[i + 1] in {'.', '\uff0e', '\u3002'}
+                if prev_is_dot or next_is_dot:
+                    continue
+            if cls._is_after_digit_or_latin(text, i):
+                continue
+            chars[i] = replacements[ch]
+        return ''.join(chars)
+
+    @classmethod
+    def _normalize_bracket_pairs(cls, text):
+        pair_sets = [
+            ({'(': '\uff08', '\uff08': '\uff08'}, {')': '\uff09', '\uff09': '\uff09'}),
+            ({'[': '\uff3b', '\uff3b': '\uff3b'}, {']': '\uff3d', '\uff3d': '\uff3d'}),
+        ]
+        result = text
+
+        for open_chars, close_chars in pair_sets:
+            chars = list(result)
+            stack = []
+            for i, ch in enumerate(chars):
+                if ch in open_chars:
+                    stack.append(i)
+                elif ch in close_chars and stack:
+                    open_index = stack.pop()
+                    content = ''.join(chars[open_index + 1:i])
+                    if not cls._has_chinese(content):
+                        continue
+                    if cls._is_after_digit_or_latin(result, open_index):
+                        continue
+                    if cls._is_before_digit_or_latin(result, i):
+                        continue
+                    chars[open_index] = open_chars[chars[open_index]]
+                    chars[i] = close_chars[ch]
+            result = ''.join(chars)
+
+        return result
+
+    @classmethod
+    def _normalize_quote_pairs(cls, text, quote_chars, left_quote, right_quote, skip_inner_latin=False):
+        chars = list(text)
+        open_index = None
+
+        for i, ch in enumerate(chars):
+            if ch not in quote_chars:
+                continue
+
+            prev_is_latin = cls._is_after_digit_or_latin(text, i)
+            next_is_latin = cls._is_before_digit_or_latin(text, i)
+            if skip_inner_latin and prev_is_latin and next_is_latin:
+                continue
+
+            if open_index is None:
+                if prev_is_latin:
+                    continue
+                open_index = i
+                continue
+
+            content = ''.join(chars[open_index + 1:i])
+            should_normalize = (
+                cls._has_chinese(content)
+                and not cls._is_after_digit_or_latin(text, open_index)
+                and not cls._is_before_digit_or_latin(text, i)
+            )
+            if should_normalize:
+                chars[open_index] = left_quote
+                chars[i] = right_quote
+            open_index = None
+
+        return ''.join(chars)
+
+    @classmethod
+    def _normalize_symbols_in_text(cls, text):
+        if not text or not cls._has_chinese(text):
+            return text
+
+        result = cls._normalize_bracket_pairs(text)
+        result = cls._normalize_ellipsis(result)
+        result = cls._normalize_quote_pairs(
+            result,
+            {'"', '\u201c', '\u201d', '\u201e', '\u201f', '\u300c', '\u300d'},
+            '\u201c',
+            '\u201d',
+        )
+        result = cls._normalize_quote_pairs(
+            result,
+            {"'", '\u2018', '\u2019', '\u201a', '\u201b'},
+            '\u2018',
+            '\u2019',
+            skip_inner_latin=True,
+        )
+        result = cls._normalize_simple_punctuation(result)
+        return result
+
+    @staticmethod
+    def _redistribute_text_to_runs(runs, new_full_text):
+        if not runs:
+            return
+
+        run_lengths = [len(run.text) for run in runs]
+        if len(new_full_text) == sum(run_lengths):
+            pos = 0
+            for run, length in zip(runs, run_lengths):
+                run.text = new_full_text[pos:pos + length]
+                pos += length
+            return
+
+        runs[0].text = new_full_text
+        for run in runs[1:]:
+            run.text = ''
+
+    def _normalize_paragraph_symbols(self, para):
+        text = para.text
+        if not text.strip() or not para.runs:
+            return False
+        if '<w:fldChar' in para._p.xml or '<w:instrText' in para._p.xml:
+            return False
+
+        normalized = self._normalize_symbols_in_text(text)
+        if normalized == text:
+            return False
+
+        self._redistribute_text_to_runs(para.runs, normalized)
+        return True
+
+    def _normalize_document_symbols(self, doc):
+        changes = 0
+
+        for para in doc.paragraphs:
+            if self._normalize_paragraph_symbols(para):
+                changes += 1
+
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        if self._normalize_paragraph_symbols(para):
+                            changes += 1
+
+        return changes
+
+    # ------------------------------------------------------------------
+    # Markdown cleanup
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _clean_markdown(text):
+        """
+        Clean Markdown content to plain text:
+        1. Remove images, links, HTML, inline code markers
+        2. Remove bold/italic markers (*, **, __)
+        3. Remove heading markers (#)
+        4. Remove blockquote markers (>)
+        5. Remove horizontal rules (---)
+        6. Fix auto-numbering (1. 1. 1.) to sequential (1. 2. 3.)
+        """
+        if not text:
+            return ""
+
+        # Global inline element replacements
+        # Remove images: ![alt](url) -> alt
+        text = re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'\1', text)
+        # Remove links: [text](url) -> text
+        text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+        # Remove HTML tags
+        text = re.sub(r'<[^>]+>', '', text)
+        # Remove inline code: `code` -> code
+        text = re.sub(r'`([^`]+)`', r'\1', text)
+        # Remove bold/italic (** or __)
+        text = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
+        text = re.sub(r'__(.*?)__', r'\1', text)
+
+        lines = text.split('\n')
+        new_lines = []
+        list_counters = {}  # indent -> count
+        in_list_block = False
+
+        for line in lines:
+            cleaned_line = line
+
+            # Remove heading markers: # Title -> Title
+            header_match = re.match(r'^\s*#+\s+(.*)', cleaned_line)
+            if header_match:
+                cleaned_line = header_match.group(1)
+                in_list_block = False
+                list_counters = {}
+
+            # Remove blockquote markers: > Text -> Text
+            blockquote_match = re.match(r'^\s*>\s?(.*)', cleaned_line)
+            if blockquote_match:
+                cleaned_line = blockquote_match.group(1)
+
+            # Remove horizontal rules: ---, ***, ___
+            if re.match(r'^\s*[-*_]{3,}\s*$', cleaned_line):
+                cleaned_line = ""
+
+            # List processing (auto-numbering fix)
+            list_match = re.match(r'^(\s*)(\d+)\.(\s+.*)', cleaned_line)
+            if list_match:
+                indent_str = list_match.group(1)
+                indent = len(indent_str.expandtabs(4))
+                content = list_match.group(3)
+
+                if indent not in list_counters:
+                    list_counters[indent] = 0
+
+                if not in_list_block and int(list_match.group(2)) == 1:
+                    list_counters[indent] = 0
+
+                list_counters[indent] += 1
+                cleaned_line = f"{indent_str}{list_counters[indent]}.{content}"
+                in_list_block = True
+            else:
+                if cleaned_line.strip() != '':
+                    if re.match(r'^\s*[*+-]\s+', cleaned_line):
+                        in_list_block = False
+                        list_counters = {}
+
+            # Remove remaining * italic markers (careful not to break list markers)
+            is_bullet = re.match(r'^\s*[*+-]\s', cleaned_line)
+
+            def remove_stars(m):
+                return m.group(1)
+
+            if is_bullet:
+                bullet_match = re.match(r'^(\s*[*+-]\s)(.*)', cleaned_line)
+                if bullet_match:
+                    marker = bullet_match.group(1)
+                    content = bullet_match.group(2)
+                    content = re.sub(r'(?<!\\)\*([^\s*][^*]*?)(?<!\\)\*', remove_stars, content)
+                    cleaned_line = marker + content
+            else:
+                cleaned_line = re.sub(r'(?<!\\)\*([^\s*][^*]*?)(?<!\\)\*', remove_stars, cleaned_line)
+
+            new_lines.append(cleaned_line)
+
+        return '\n'.join(new_lines)
+
+    # ------------------------------------------------------------------
+    # Blank line removal for plain text sources
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _remove_blank_lines_from_text(text):
+        """
+        Remove extra blank lines from txt/md text:
+        - Single blank line: delete
+        - 2+ consecutive blank lines: merge to 1
+        """
+        if not text:
+            return text
+
+        lines = text.split('\n')
+        result = []
+        blank_count = 0
+
+        for line in lines:
+            if line.strip() == '':
+                blank_count += 1
+            else:
+                if blank_count >= 2:
+                    result.append('')
+                result.append(line)
+                blank_count = 0
+
+        if blank_count >= 2:
+            result.append('')
+
+        return '\n'.join(result)
+
+    # ------------------------------------------------------------------
+    # Text file reading
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _read_text_file(path):
+        """Try multiple encodings to read text file"""
+        for enc in ['utf-8', 'utf-8-sig', 'gbk', 'gb18030']:
+            try:
+                with open(path, 'r', encoding=enc) as f:
+                    content = f.read()
+                return content
+            except UnicodeDecodeError:
+                continue
+        with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+            return f.read()
+
     def convert_to_docx(self, input_path):
         file_ext = os.path.splitext(input_path)[1].lower()
-        is_from_txt = (file_ext == '.txt')
+        is_from_txt = (file_ext in ('.txt', '.md'))
         temp_dir = os.path.dirname(input_path)
         base_name = os.path.splitext(os.path.basename(input_path))[0]
 
@@ -78,25 +447,35 @@ class WordProcessor:
             shutil.copy2(input_path, temp_docx_path)
             self.temp_files.append(temp_docx_path)
             self._log(f"  > 副本创建成功: {os.path.basename(temp_docx_path)}")
-            return temp_docx_path, is_from_txt
+            return temp_docx_path, False
 
         temp_docx_path = os.path.join(temp_dir, f"~temp_converted_{base_name}.docx")
         self.temp_files.append(temp_docx_path)
 
         if file_ext == '.txt':
             self._log("检测到 .txt 文件，正在创建 .docx...")
+            text_content = self._read_text_file(input_path)
+            if self.remove_blank_lines:
+                text_content = self._remove_blank_lines_from_text(text_content)
+                self._log("  > 已删除 TXT 中的多余空行。")
             doc = Document()
-            try:
-                with open(input_path, 'r', encoding='utf-8') as f:
-                    for line in f: doc.add_paragraph(line.strip())
-                self._log("  > 已使用 UTF-8 编码读取TXT文件。")
-            except UnicodeDecodeError:
-                self._log("  > UTF-8读取失败，尝试使用 GBK 编码...")
-                with open(input_path, 'r', encoding='gbk') as f:
-                    for line in f: doc.add_paragraph(line.strip())
-                self._log("  > 已成功使用 GBK 编码读取TXT文件。")
+            for line in text_content.split('\n'):
+                doc.add_paragraph(line.strip())
             doc.save(temp_docx_path)
             self._log("TXT转换完成。")
+            return temp_docx_path, is_from_txt
+        elif file_ext == '.md':
+            self._log("检测到 .md 文件，正在清理 Markdown 标记并创建 .docx...")
+            raw_text = self._read_text_file(input_path)
+            cleaned_text = self._clean_markdown(raw_text)
+            if self.remove_blank_lines:
+                cleaned_text = self._remove_blank_lines_from_text(cleaned_text)
+                self._log("  > 已删除 Markdown 文本中的多余空行。")
+            doc = Document()
+            for line in cleaned_text.split('\n'):
+                doc.add_paragraph(line.strip())
+            doc.save(temp_docx_path)
+            self._log("Markdown 转换完成。")
             return temp_docx_path, is_from_txt
         elif file_ext in ['.wps', '.doc']:
             self._log(f"正在转换 {file_ext} 文件为 .docx...")
@@ -185,12 +564,16 @@ class WordProcessor:
             self._log("  > 已将页面大小设置为 A4。")
 
     def _set_run_font(self, run, font_name, size_pt, set_color=False):
-        run.font.name = font_name
         run.font.size = Pt(size_pt)
         if set_color: run.font.color.rgb = RGBColor(0, 0, 0)
         rPr = run._r.get_or_add_rPr()
         rFonts = rPr.get_or_add_rFonts()
         rFonts.set(qn('w:eastAsia'), font_name)
+        # 根据配置决定西文字体（数字、字母）
+        en_font = 'Times New Roman' if self.config.get('use_times_new_roman', False) else font_name
+        run.font.name = en_font
+        rFonts.set(qn('w:ascii'), en_font)
+        rFonts.set(qn('w:hAnsi'), en_font)
 
     def _apply_font_to_runs(self, para, font_name, size_pt, set_color=False):
         for run in para.runs: self._set_run_font(run, font_name, size_pt, set_color=set_color)
@@ -283,11 +666,24 @@ class WordProcessor:
             self._log(f"  > 大纲级别: 无 → Lv{level} (新设) - \"{text_preview}...\"")
 
     def _apply_text_indent_and_align(self, para):
-        para.paragraph_format.first_line_indent = None
-        para.paragraph_format.left_indent = Cm(self.config['left_indent_cm'])
-        para.paragraph_format.right_indent = Cm(self.config['right_indent_cm'])
+        pf = para.paragraph_format
+        # 清除 python-docx 层面的缩进
+        pf.first_line_indent = None
+        pf.left_indent = Cm(self.config['left_indent_cm'])
+        pf.right_indent = Cm(self.config['right_indent_cm'])
+        
+        # 操作底层 XML，彻底清理残留的缩进属性，避免与首行缩进叠加
         ind = para._p.get_or_add_pPr().get_or_add_ind()
+        # 清除可能残留的字符单位左缩进（防止与首行缩进叠加显示为4字符）
+        ind.attrib.pop(qn('w:leftChars'), None)
+        # 清除可能残留的悬挂缩进
+        ind.attrib.pop(qn('w:hanging'), None)
+        ind.attrib.pop(qn('w:hangingChars'), None)
+        # 清除可能残留的固定值首行缩进（我们使用字符单位 firstLineChars）
+        ind.attrib.pop(qn('w:firstLine'), None)
+        # 设置首行缩进 2 字符（200 = 2 × 100）
         ind.set(qn("w:firstLineChars"), "200")
+        
         para.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
 
     def _iter_block_items(self, parent):
@@ -295,6 +691,271 @@ class WordProcessor:
         for child in parent_elm.iterchildren():
             if isinstance(child, CT_P): yield Paragraph(child, parent)
             elif isinstance(child, CT_Tbl): yield Table(child, parent)
+
+    def _get_or_add_table_pr(self, table):
+        tbl = table._tbl
+        tbl_pr = tbl.tblPr
+        if tbl_pr is None:
+            tbl_pr = OxmlElement('w:tblPr')
+            tbl.insert(0, tbl_pr)
+        return tbl_pr
+
+    def _set_table_borders(self, table, size_pt=0.5, color="000000"):
+        size = max(1, int(float(size_pt) * 8))
+        tbl_pr = self._get_or_add_table_pr(table)
+        borders = tbl_pr.find(qn('w:tblBorders'))
+        if borders is None:
+            borders = OxmlElement('w:tblBorders')
+            tbl_pr.append(borders)
+        else:
+            for child in list(borders):
+                borders.remove(child)
+
+        for edge in ('top', 'left', 'bottom', 'right', 'insideH', 'insideV'):
+            elem = OxmlElement(f'w:{edge}')
+            elem.set(qn('w:val'), 'single')
+            elem.set(qn('w:sz'), str(size))
+            elem.set(qn('w:space'), '0')
+            elem.set(qn('w:color'), color)
+            borders.append(elem)
+
+    def _set_cell_borders(self, cell, size_pt=0.5, color="000000"):
+        size = max(1, int(float(size_pt) * 8))
+        tc = cell._tc
+        tc_pr = tc.tcPr
+        if tc_pr is None:
+            tc_pr = OxmlElement('w:tcPr')
+            tc.insert(0, tc_pr)
+
+        borders = tc_pr.find(qn('w:tcBorders'))
+        if borders is None:
+            borders = OxmlElement('w:tcBorders')
+            tc_pr.append(borders)
+        else:
+            for child in list(borders):
+                borders.remove(child)
+
+        for edge in ('top', 'left', 'bottom', 'right'):
+            elem = OxmlElement(f'w:{edge}')
+            elem.set(qn('w:val'), 'single')
+            elem.set(qn('w:sz'), str(size))
+            elem.set(qn('w:space'), '0')
+            elem.set(qn('w:color'), color)
+            borders.append(elem)
+
+    def _set_table_cell_margins(self, table, top_cm=0.0, bottom_cm=0.0, left_cm=0.05, right_cm=0.05):
+        tbl_pr = self._get_or_add_table_pr(table)
+        cell_mar = tbl_pr.find(qn('w:tblCellMar'))
+        if cell_mar is None:
+            cell_mar = OxmlElement('w:tblCellMar')
+            tbl_pr.append(cell_mar)
+
+        def set_side(tag, cm_value):
+            node = cell_mar.find(qn(f'w:{tag}'))
+            if node is None:
+                node = OxmlElement(f'w:{tag}')
+                cell_mar.append(node)
+            node.set(qn('w:type'), 'dxa')
+            node.set(qn('w:w'), str(int(Cm(float(cm_value)).twips)))
+
+        set_side('top', top_cm)
+        set_side('bottom', bottom_cm)
+        set_side('left', left_cm)
+        set_side('right', right_cm)
+
+    def _set_table_width_percent(self, table, percent=100):
+        percent = max(1, min(100, int(float(percent))))
+        tbl_pr = self._get_or_add_table_pr(table)
+        tbl_w = tbl_pr.find(qn('w:tblW'))
+        if tbl_w is None:
+            tbl_w = OxmlElement('w:tblW')
+            tbl_pr.append(tbl_w)
+        tbl_w.set(qn('w:type'), 'pct')
+        tbl_w.set(qn('w:w'), str(percent * 50))
+
+    def _set_table_indent(self, table, indent_twips=0):
+        tbl_pr = self._get_or_add_table_pr(table)
+        tbl_ind = tbl_pr.find(qn('w:tblInd'))
+        if tbl_ind is None:
+            tbl_ind = OxmlElement('w:tblInd')
+            tbl_pr.append(tbl_ind)
+        tbl_ind.set(qn('w:type'), 'dxa')
+        tbl_ind.set(qn('w:w'), str(int(indent_twips)))
+
+    @staticmethod
+    def _table_text_weight(text):
+        weight = 0.0
+        for ch in text:
+            weight += 0.5 if ord(ch) < 128 else 1.0
+        return weight
+
+    @staticmethod
+    def _normalize_table_pcts(weights, min_pct, max_pct):
+        total = sum(weights) or 1.0
+        pcts = [w / total * 100 for w in weights]
+        for i, value in enumerate(pcts):
+            if value < min_pct:
+                pcts[i] = min_pct
+            elif value > max_pct:
+                pcts[i] = max_pct
+        total = sum(pcts) or 1.0
+        return [value / total * 100 for value in pcts]
+
+    def _set_table_col_widths_by_content(self, table, min_pct=8, max_pct=45):
+        if not table.rows:
+            return
+        col_count = max(len(row.cells) for row in table.rows)
+        if col_count == 0:
+            return
+
+        min_pct = max(1.0, float(min_pct))
+        max_pct = max(min_pct, float(max_pct))
+        max_weights = [1.0] * col_count
+        for row in table.rows:
+            for col_idx, cell in enumerate(row.cells):
+                text = ''.join(p.text for p in cell.paragraphs).strip()
+                if text:
+                    max_weights[col_idx] = max(max_weights[col_idx], self._table_text_weight(text))
+
+        pcts = self._normalize_table_pcts(max_weights, min_pct, max_pct)
+        tbl = table._tbl
+        tbl_grid = tbl.tblGrid
+        if tbl_grid is None:
+            tbl_grid = OxmlElement('w:tblGrid')
+            tbl.insert(0, tbl_grid)
+        else:
+            for child in list(tbl_grid):
+                tbl_grid.remove(child)
+
+        for pct in pcts:
+            grid_col = OxmlElement('w:gridCol')
+            grid_col.set(qn('w:w'), str(int(pct * 50)))
+            tbl_grid.append(grid_col)
+
+        for row in table.rows:
+            for col_idx, cell in enumerate(row.cells):
+                tc = cell._tc
+                tc_pr = tc.tcPr
+                if tc_pr is None:
+                    tc_pr = OxmlElement('w:tcPr')
+                    tc.insert(0, tc_pr)
+                tc_w = tc_pr.find(qn('w:tcW'))
+                if tc_w is None:
+                    tc_w = OxmlElement('w:tcW')
+                    tc_pr.append(tc_w)
+                tc_w.set(qn('w:type'), 'pct')
+                tc_w.set(qn('w:w'), str(int(pcts[col_idx] * 50)))
+
+    @staticmethod
+    def _is_numeric_table_text(text):
+        text = (text or '').strip()
+        if not text:
+            return False
+        text = text.replace(',', '').replace('，', '').replace('％', '%')
+        text = re.sub(r'^[¥￥$]', '', text)
+        text = re.sub(r'(元|万元|亿元)$', '', text)
+        return re.match(r'^[-+]?(?:\d+(?:\.\d+)?|\.\d+)%?$', text) is not None
+
+    @staticmethod
+    def _is_short_table_text(text, max_len=4):
+        text = (text or '').strip()
+        return 0 < len(text) <= int(max_len)
+
+    @staticmethod
+    def _config_float(config, key, default):
+        value = config.get(key, default)
+        try:
+            if value == '':
+                return default
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _format_tables(self, doc, apply_color=True):
+        if not self.config.get('enable_table_formatting', False):
+            self._log("表格自动调整未启用，跳过表格内容格式化。")
+            return
+
+        tables = list(doc.tables)
+        if not tables:
+            self._log("未发现表格，跳过表格内容格式化。")
+            return
+
+        table_font = self.config.get('table_font', self.config.get('body_font', '仿宋_GB2312'))
+        table_header_font = self.config.get('table_header_font', table_font)
+        table_size = self._config_float(self.config, 'table_size', self.config.get('body_size', 12))
+        table_line_spacing = self._config_float(self.config, 'table_line_spacing', 22)
+        row_height_cm = self._config_float(self.config, 'table_row_height_cm', 0.7)
+        border_size_pt = self._config_float(self.config, 'table_border_size_pt', 0.5)
+        width_percent = self._config_float(self.config, 'table_width_percent', 100)
+        col_min_pct = self._config_float(self.config, 'table_col_min_pct', 8)
+        col_max_pct = self._config_float(self.config, 'table_col_max_pct', 45)
+        short_text_len = self._config_float(self.config, 'table_short_text_len', 4)
+        auto_col_width = self.config.get('table_auto_col_width', True)
+        header_bold = self.config.get('table_header_bold', True)
+        smart_align = self.config.get('table_smart_align', False)
+        unified_borders = self.config.get('table_unified_borders', True)
+
+        self._log(f"开始格式化表格内容（共 {len(tables)} 个）...")
+        for table_idx, table in enumerate(tables, start=1):
+            self._log(f"  > 表格 {table_idx}: 调整宽度、行高、字体和单元格格式")
+            table.autofit = not auto_col_width
+            self._set_table_width_percent(table, width_percent)
+            self._set_table_indent(table, 0)
+            self._set_table_cell_margins(table)
+            if unified_borders:
+                self._set_table_borders(table, size_pt=border_size_pt)
+            if auto_col_width:
+                self._set_table_col_widths_by_content(table, min_pct=col_min_pct, max_pct=col_max_pct)
+
+            serial_col_idx = None
+            if table.rows:
+                for col_idx, cell in enumerate(table.rows[0].cells):
+                    head_text = ''.join(p.text for p in cell.paragraphs).strip()
+                    if '序号' in head_text or head_text == '序':
+                        serial_col_idx = col_idx
+                        break
+
+            for row_idx, row in enumerate(table.rows):
+                if row_height_cm > 0:
+                    row.height = Cm(row_height_cm)
+                    row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
+
+                for col_idx, cell in enumerate(row.cells):
+                    if unified_borders:
+                        self._set_cell_borders(cell, size_pt=border_size_pt)
+
+                    cell_text = ''.join(p.text for p in cell.paragraphs).strip()
+                    for para in cell.paragraphs:
+                        if para.text.strip():
+                            for run in para.runs:
+                                font_name = table_header_font if row_idx == 0 else table_font
+                                self._set_run_font(run, font_name, table_size, set_color=apply_color)
+                                if row_idx == 0 and header_bold:
+                                    run.font.bold = True
+
+                        para.paragraph_format.first_line_indent = Pt(0)
+                        para.paragraph_format.space_before = Pt(0)
+                        para.paragraph_format.space_after = Pt(0)
+                        if table_line_spacing > 0:
+                            para.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
+                            para.paragraph_format.line_spacing = Pt(table_line_spacing)
+                        else:
+                            para.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+
+                        if smart_align:
+                            if row_idx == 0:
+                                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            elif '合计' in cell_text or '总计' in cell_text:
+                                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            elif serial_col_idx is not None and col_idx == serial_col_idx:
+                                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            elif self._is_numeric_table_text(cell_text):
+                                para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                            elif self._is_short_table_text(cell_text, short_text_len):
+                                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            else:
+                                para.alignment = WD_ALIGN_PARAGRAPH.LEFT
     
     def _find_title_and_subtitle_paragraphs(self, doc, is_from_txt, start_index=0):
         """
@@ -451,6 +1112,10 @@ class WordProcessor:
         if not is_from_txt: self._preprocess_com_tasks(processing_path)
         
         doc = Document(processing_path)
+
+        if self.config.get('normalize_punctuation', False):
+            symbol_changes = self._normalize_document_symbols(doc)
+            self._log(f"符号标准化完成，共修复 {symbol_changes} 个段落/表格单元格。")
         
         all_blocks = list(self._iter_block_items(doc))
         processed_indices = set()
@@ -817,6 +1482,7 @@ class WordProcessor:
             
             block_idx += 1
         
+        self._format_tables(doc, apply_color=apply_color)
         self._apply_page_setup(doc, is_from_txt=is_from_txt)
         self._log("正在保存最终文档...")
         doc.save(output_path)
@@ -825,8 +1491,9 @@ class WordProcessor:
 class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
-        master.title("Word文档智能排版工具 v2.6.4")
-        master.geometry("1200x800")
+        master.title("Word文档智能排版工具 v2.6.7")
+        master.geometry("1200x860")
+        master.minsize(1200, 860)
 
         self.font_size_map = {
             '一号 (26pt)': 26, '小一 (24pt)': 24, '二号 (22pt)': 22, '小二 (18pt)': 18,
@@ -847,18 +1514,34 @@ class WordFormatterGUI:
             'title_line_spacing': 33, 'subtitle_line_spacing': 33,
             'left_indent_cm': 0.0, 'right_indent_cm': 0.0,
             'set_outline': True, 'enable_attachment_formatting': True,
-            'force_a4': False
+            'force_a4': False, 'use_times_new_roman': False,
+            'remove_blank_lines': True, 'normalize_punctuation': False,
+            'enable_table_formatting': False, 'table_header_font': '仿宋_GB2312',
+            'table_font': '仿宋_GB2312',
+            'table_size': 12, 'table_line_spacing': 22, 'table_row_height_cm': 0.7,
+            'table_auto_col_width': True, 'table_width_percent': 100,
+            'table_header_bold': True, 'table_smart_align': False,
+            'table_unified_borders': True, 'table_border_size_pt': 0.5
         }
         self.font_options = {
             'title': ['方正小标宋简体', '方正小标宋_GBK', '华文中宋'], 'h1': ['黑体', '方正黑体_GBK', '方正黑体简体', '华文黑体'],
             'h2': ['楷体_GB2312', '方正楷体_GBK', '楷体', '方正楷体简体', '华文楷体'],
             'body': ['仿宋_GB2312', '方正仿宋_GBK', '仿宋', '方正仿宋简体', '华文仿宋'], 'page_number': ['宋体', 'Times New Roman'],
             'table_caption': ['黑体', '宋体', '仿宋_GB2312'], 'figure_caption': ['黑体', '宋体', '仿宋_GB2312'], 'attachment': ['黑体', '宋体', '仿宋_GB2312'],
-            'subtitle': ['楷体_GB2312', '方正楷体_GBK', '楷体', '方正楷体简体', '华文楷体']
+            'subtitle': ['楷体_GB2312', '方正楷体_GBK', '楷体', '方正楷体简体', '华文楷体'],
+            'table': ['仿宋_GB2312', '宋体', '黑体', '楷体_GB2312', '方正仿宋_GBK', '仿宋']
         }
         self.set_outline_var = tk.BooleanVar(value=self.default_params['set_outline'])
         self.enable_attachment_var = tk.BooleanVar(value=self.default_params['enable_attachment_formatting'])
         self.force_a4_var = tk.BooleanVar(value=self.default_params['force_a4'])
+        self.use_times_new_roman_var = tk.BooleanVar(value=self.default_params['use_times_new_roman'])
+        self.remove_blank_lines_var = tk.BooleanVar(value=self.default_params['remove_blank_lines'])
+        self.normalize_punctuation_var = tk.BooleanVar(value=self.default_params['normalize_punctuation'])
+        self.enable_table_var = tk.BooleanVar(value=self.default_params['enable_table_formatting'])
+        self.table_auto_col_width_var = tk.BooleanVar(value=self.default_params['table_auto_col_width'])
+        self.table_header_bold_var = tk.BooleanVar(value=self.default_params['table_header_bold'])
+        self.table_smart_align_var = tk.BooleanVar(value=self.default_params['table_smart_align'])
+        self.table_unified_borders_var = tk.BooleanVar(value=self.default_params['table_unified_borders'])
         self.entries = {}
         
         self.default_config_path = "default_config.json"
@@ -937,6 +1620,18 @@ class WordFormatterGUI:
         text_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         self.direct_text_input = scrolledtext.ScrolledText(text_frame, height=10, wrap=tk.WORD)
         self.direct_text_input.pack(fill=tk.BOTH, expand=True)
+
+        style = ttk.Style()
+        style.configure('Success.TButton', font=('Helvetica', 10, 'bold'), foreground='green')
+
+        left_action_frame = ttk.Frame(left_frame)
+        left_action_frame.pack(fill=tk.X, pady=(5, 0))
+        ttk.Button(
+            left_action_frame,
+            text="开始排版",
+            style='Success.TButton',
+            command=self.start_processing
+        ).pack(fill=tk.X, ipady=8)
 
         log_frame = ttk.LabelFrame(left_frame, text="调试日志")
         log_frame.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
@@ -1038,6 +1733,29 @@ class WordFormatterGUI:
         create_entry("段落左缩进(cm)", 'left_indent_cm', row, 0)
         create_entry("段落右缩进(cm)", 'right_indent_cm', row, 2)
         row += 1
+
+        # Section: Table Content
+        table_help = (
+            "• 默认不启用表格自动调整，启用后才会调整表头/内容字体、字号、行距、行高、列宽和边框。\n"
+            "• 默认保留单元格原始对齐方式；勾选智能对齐后，表头/序号/短文本居中，数字靠右，长文本靠左。"
+        )
+        row = create_section_header("表格内容（实验功能）", table_help, row)
+        ttk.Checkbutton(params_frame, text="启用表格自动调整（总开关）", variable=self.enable_table_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        ttk.Checkbutton(params_frame, text="自动调整列宽", variable=self.table_auto_col_width_var).grid(row=row, column=2, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        ttk.Checkbutton(params_frame, text="统一表格边框", variable=self.table_unified_borders_var).grid(row=row, column=4, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        row += 1
+        create_combo("表头字体", 'table_header_font', self.font_options['table'], row, 0, readonly=False)
+        create_combo("表格字体", 'table_font', self.font_options['table'], row, 2, readonly=False)
+        create_font_size_combo("表格字号", 'table_size', row, 4)
+        row += 1
+        create_entry("表格行距(磅)", 'table_line_spacing', row, 0)
+        create_entry("表格行高(cm)", 'table_row_height_cm', row, 2)
+        create_entry("表格宽度(%)", 'table_width_percent', row, 4)
+        row += 1
+        create_entry("边框粗细(pt)", 'table_border_size_pt', row, 0)
+        ttk.Checkbutton(params_frame, text="表头行加粗", variable=self.table_header_bold_var).grid(row=row, column=2, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        ttk.Checkbutton(params_frame, text="智能调整单元格对齐", variable=self.table_smart_align_var).grid(row=row, column=4, columnspan=2, sticky=tk.W, padx=3, pady=2)
+        row += 1
         
         # Section: Other Elements
         other_help = '• 图/表标题: 自动查找图片或表格【上方或下方】最近的、居中的、以"图"或"表"开头的段落。\n• 附件标识: 识别"附件1"、"附件："等独立段落。启用后将自动【段前分页】并按主副标题规则识别其自身标题。'
@@ -1058,8 +1776,15 @@ class WordFormatterGUI:
         row += 1
         ttk.Checkbutton(params_frame, text="自动设置大纲级别 (用于生成导航目录)", variable=self.set_outline_var).grid(row=row, columnspan=6, sticky=tk.W, padx=3)
         row += 1
+        ttk.Checkbutton(params_frame, text="数字和字母使用 Times New Roman 字体", variable=self.use_times_new_roman_var).grid(row=row, columnspan=6, sticky=tk.W, padx=3)
+        row += 1
+        ttk.Checkbutton(params_frame, text="删除 TXT/MD 文件中的空行 (单个空行删除，连续多个合并为1个)", variable=self.remove_blank_lines_var).grid(row=row, columnspan=6, sticky=tk.W, padx=3)
+        row += 1
 
         # 按钮区域
+        ttk.Checkbutton(params_frame, text="启用符号标准化（实验功能，保守修复中英文标点混用）", variable=self.normalize_punctuation_var).grid(row=row, columnspan=6, sticky=tk.W, padx=3)
+        row += 1
+
         button_frame = ttk.Frame(params_container)
         button_frame.pack(fill=tk.X, pady=5)
         
@@ -1072,11 +1797,6 @@ class WordFormatterGUI:
         ttk.Button(config_buttons, text="恢复内置默认", command=self.load_defaults).grid(row=1, column=1, sticky='ew', padx=2, pady=2)
         config_buttons.columnconfigure(0, weight=1)
         config_buttons.columnconfigure(1, weight=1)
-
-        # 开始排版按钮
-        style = ttk.Style()
-        style.configure('Success.TButton', font=('Helvetica', 10, 'bold'), foreground='green')
-        ttk.Button(button_frame, text="开始排版", style='Success.TButton', command=self.start_processing).pack(fill=tk.X, ipady=8, pady=(5, 0))
 
         # 配置Canvas滚动
         def on_canvas_configure(event):
@@ -1117,14 +1837,29 @@ class WordFormatterGUI:
             self.load_defaults()
 
     def _apply_config(self, loaded_config):
+        loaded_config = {**self.default_params, **loaded_config}
         self.set_outline_var.set(loaded_config.get('set_outline', True))
         self.enable_attachment_var.set(loaded_config.get('enable_attachment_formatting', True))
         self.force_a4_var.set(loaded_config.get('force_a4', False))
+        self.use_times_new_roman_var.set(loaded_config.get('use_times_new_roman', False))
+        self.remove_blank_lines_var.set(loaded_config.get('remove_blank_lines', True))
+        self.normalize_punctuation_var.set(loaded_config.get('normalize_punctuation', False))
+        self.enable_table_var.set(loaded_config.get('enable_table_formatting', False))
+        self.table_auto_col_width_var.set(loaded_config.get('table_auto_col_width', True))
+        self.table_header_bold_var.set(loaded_config.get('table_header_bold', True))
+        self.table_smart_align_var.set(loaded_config.get('table_smart_align', False))
+        self.table_unified_borders_var.set(loaded_config.get('table_unified_borders', True))
+        boolean_keys = [
+            'set_outline', 'enable_attachment_formatting', 'force_a4',
+            'use_times_new_roman', 'remove_blank_lines', 'normalize_punctuation',
+            'enable_table_formatting', 'table_auto_col_width', 'table_header_bold',
+            'table_smart_align', 'table_unified_borders'
+        ]
         for key, value in loaded_config.items():
-            if key in ['set_outline', 'enable_attachment_formatting', 'force_a4']: continue
+            if key in boolean_keys: continue
             widget = self.entries.get(key)
             if widget:
-                if "_size" in key:
+                if "_size" in key and isinstance(widget, ttk.Combobox):
                     display_val = self.font_size_map_rev.get(value, str(value))
                     widget.set(display_val)
                 elif isinstance(widget, ttk.Combobox):
@@ -1140,7 +1875,7 @@ class WordFormatterGUI:
         config = {}
         for key, widget in self.entries.items():
             value = widget.get().strip()
-            if "_size" in key:
+            if "_size" in key and isinstance(widget, ttk.Combobox):
                 if value in self.font_size_map:
                     config[key] = self.font_size_map[value]
                 else:
@@ -1154,6 +1889,14 @@ class WordFormatterGUI:
         config['set_outline'] = self.set_outline_var.get()
         config['enable_attachment_formatting'] = self.enable_attachment_var.get()
         config['force_a4'] = self.force_a4_var.get()
+        config['use_times_new_roman'] = self.use_times_new_roman_var.get()
+        config['remove_blank_lines'] = self.remove_blank_lines_var.get()
+        config['normalize_punctuation'] = self.normalize_punctuation_var.get()
+        config['enable_table_formatting'] = self.enable_table_var.get()
+        config['table_auto_col_width'] = self.table_auto_col_width_var.get()
+        config['table_header_bold'] = self.table_header_bold_var.get()
+        config['table_smart_align'] = self.table_smart_align_var.get()
+        config['table_unified_borders'] = self.table_unified_borders_var.get()
         return config
 
     def save_config(self):
@@ -1199,14 +1942,14 @@ class WordFormatterGUI:
             if os.path.isdir(path):
                 for root, _, files in os.walk(path):
                     for f in files:
-                        if f.lower().endswith(('.docx', '.doc', '.wps', '.txt')):
+                        if f.lower().endswith(('.docx', '.doc', '.wps', '.txt', '.md')):
                             full_path = os.path.join(root, f)
                             if full_path not in current_files:
                                 self.file_listbox.insert(tk.END, full_path)
                                 current_files.add(full_path)
                                 added_count += 1
             elif os.path.isfile(path):
-                if path.lower().endswith(('.docx', '.doc', '.wps', '.txt')):
+                if path.lower().endswith(('.docx', '.doc', '.wps', '.txt', '.md')):
                     if path not in current_files:
                         self.file_listbox.insert(tk.END, path)
                         current_files.add(path)
@@ -1218,7 +1961,7 @@ class WordFormatterGUI:
         self._update_listbox_placeholder()
 
     def add_files(self):
-        files = filedialog.askopenfilenames(filetypes=[("所有支持的文件", "*.docx;*.doc;*.wps;*.txt"), ("Word 文档", "*.docx;*.doc"), ("WPS 文档", "*.wps"), ("纯文本", "*.txt")])
+        files = filedialog.askopenfilenames(filetypes=[("所有支持的文件", "*.docx;*.doc;*.wps;*.txt;*.md"), ("Word 文档", "*.docx;*.doc"), ("WPS 文档", "*.wps"), ("纯文本", "*.txt"), ("Markdown", "*.md")])
         if files:
             self._add_paths_to_listbox(files)
         
@@ -1245,12 +1988,12 @@ class WordFormatterGUI:
         help_text_widget = scrolledtext.ScrolledText(help_win, wrap=tk.WORD, state='disabled')
         help_text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         help_content = """
-Word文档智能排版工具 v2.6.4 - 使用说明
+Word文档智能排版工具 v2.6.7 - 使用说明
 
 本工具旨在提供一键式的专业文档排版体验，支持批量处理和高度自定义。
 
 【核心功能模式】
-1. 文件批量处理：可拖拽或添加 .docx, .doc, .wps, .txt 文件。
+1. 文件批量处理：可拖拽或添加 .docx, .doc, .wps, .txt, .md 文件。
 2. 直接输入文本：直接粘贴文本进行排版（自动强制使用A4纸张）。
 
 【操作流程】
@@ -1262,7 +2005,7 @@ Word文档智能排版工具 v2.6.4 - 使用说明
 - 主标题与副标题:
   • 主标题: 识别文档开头的连续【居中】且【字体字号相同】的段落。
   • 副标题: 主标题下方，同样【居中】但【字体字号与主标题不同】的段落。
-  • TXT文件: 会将首个非层级标题的段落视为题目。
+  • TXT/MD文件: 会将首个非层级标题的段落视为题目。
 
 - 正文与层级标题:
   • 一级标题: “一、”, “二、” ...
@@ -1274,13 +2017,16 @@ Word文档智能排版工具 v2.6.4 - 使用说明
 - 其他元素:
   • 图/表标题: 自动查找图片或表格【上方或下方】最近的、居中的、以“图”或“表”开头的段落。
   • 附件标识: 识别“附件1”、“附件：”等独立段落。启用附件格式化后，将自动【段前分页】并按主副标题规则识别其自身标题。
+  • 表格内容: 默认不启用表格自动调整。启用后可分别设置表头/内容字体，并统一字号、行距、行高、列宽、边框，可选智能对齐。
 
 【其他特性】
 - 纸张设置：直接输入文本默认使用A4纸。文件处理默认保持原样，可勾选“强制设置为A4纸张”进行修改。
 - 保留原文格式：统一格式时，会保留【加粗、斜体、下划线、字体颜色】等。
 - 二级标题智能拆分：若二级标题后紧跟正文（如"（一）标题。正文..."），会自动在【同一个段落内】为标题和正文应用不同格式。
-- 豁免内容：表格、图片、嵌入对象等内容会自动跳过格式化。
+- 豁免内容：图片、嵌入对象等内容会自动跳过格式化；表格仅在勾选“启用表格自动调整”后处理。
 - 参数自定义：所有核心参数均可在界面调整。配置方案可【保存】和【加载】。
+- Markdown 支持：.md 文件会自动清理 Markdown 标记（标题#、粗体**、链接[]()、图片![]()等）后转为纯文本进行排版。
+- 空行删除：默认删除 TXT/MD 文件中的多余空行（单个空行直接删除，连续2个以上合并为1个），可在选项中关闭。
 
 【安全提示】
 本工具【绝对不会】修改您的任何原始文件。所有操作都在后台的临时副本上进行，确保源文件100%安全。
@@ -1302,7 +2048,9 @@ Word文档智能排版工具 v2.6.4 - 使用说明
             
         self.debug_text.config(state='normal'); self.debug_text.delete('1.0', tk.END); self.debug_text.config(state='disabled')
         
-        processor = WordProcessor(self.collect_config(), self.log_to_debug_window)
+        collected_config = self.collect_config()
+        remove_blank_lines = collected_config.pop('remove_blank_lines', True)
+        processor = WordProcessor(collected_config, self.log_to_debug_window, remove_blank_lines=remove_blank_lines)
         active_tab_index = self.notebook.index(self.notebook.select())
 
         try:

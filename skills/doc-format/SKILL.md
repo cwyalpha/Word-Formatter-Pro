@@ -1,165 +1,98 @@
 ---
 name: doc-format
-description: 公文/报告/常规 Word 文档自动排版为公文格式的技能。用于将 .docx、.doc、.wps、.txt、.md 单文件、多文件或目录批量转为符合公文规范的 .docx，目录输入递归保留原目录结构；支持题目/副标题识别、标题层级识别、附件、图表标题、表格内容自动调整、数字和字母字体、符号标准化。需要做文档排版、Word/WPS 转 docx 后排版、或批量规范化文档时应使用本技能。
+description: 公文格式排版工具。将doc/docx/wps/txt/md文档按照公文排版规范进行自动格式化，输出标准docx。支持智能识别标题层级（一、/（一）/1./（1））、题目/副标题、附件格式化、图表标题识别、页面边距/页码/行距设定。支持批量处理目录、自定义字体配置。当用户需要排版公文、格式化文档、统一文档格式、调整字体字号行距边距时使用此技能。关键词：公文排版、文档格式化、字体设置、标题层级、格式统一、排版工具。
 ---
 
-# doc-format
+# doc-format — 公文格式排版工具
 
-使用 `scripts/wfp_cli.py` 将文档按公文排版规则格式化为 `.docx`。原始文件不原地修改。
+使用 `scripts/wfp_cli.py` 将文档按公文排版规则格式化为标准 `.docx`。原始文件不原地修改，Word/WPS 类文档会先复制或转换到临时副本，再执行排版。
 
-## 支持范围
+## 核心能力
 
-输入文件类型：
+- 支持 `.docx`、`.doc`、`.wps`、`.txt`、`.md`。
+- 支持单文件、多文件、一个或多个目录；目录输入默认递归扫描，输出目录保留原结构。
+- 自动识别题目、副标题、四级标题、二级标题段内正文、图/表标题、附件标识。
+- 可选表格内容自动调整、数字和字母单独字体、符号标准化。
+- 支持 `wfp_config.json`、`--config`、`--config-json`、`--set key=value` 和便利开关覆盖配置。
 
-- `.docx`
-- `.doc`
-- `.wps`
-- `.txt`
-- `.md`
+## 使用前检查
 
-输入形式：
-
-- 单个文件
-- 多个文件
-- 一个或多个目录
-- 目录输入默认递归扫描子目录，并在输出目录中保留原目录结构
-
-输出形式：
-
-- 单文件输入默认输出到同目录：`原文件名_formatted.docx`
-- 多文件或目录输入默认输出到新的目录；目录输入的子目录结构会保留
-- 所有成功输出均为 `.docx`
-- stdout 每行打印一个成功生成的 `.docx` 绝对路径
-
-## 依赖
-
-Python 包：
-
-```bash
-pip install -r skills/doc-format/requirements.txt
-```
-
-平台转换依赖：
-
-- Windows 处理 `.doc/.wps` 和自动编号转文本：安装 WPS Office 或 Microsoft Word，并安装 `pywin32`
-- macOS/Linux 处理 `.doc/.wps`：安装 LibreOffice，确保 `soffice` 可用
-- macOS/Linux 不做自动编号转文本；LibreOffice 也不提供等价能力
-
-LibreOffice 安装提示：
-
-```bash
-python skills/doc-format/scripts/wfp_cli.py install-help
-```
-
-## 平台行为
-
-Windows 默认使用 WPS/Office COM 接口：
-
-- `.doc/.wps` 会先尝试通过 WPS，再尝试 Microsoft Word 转为 `.docx`
-- 如果转换失败，提示用户先手动转成 `.docx` 后再输入
-- 自动编号会尝试通过 WPS/Word 转成普通可编辑文本
-- 如果自动编号转换失败，继续执行后续格式化，并在处理完成后提醒用户人工检查编号文本和段落
-
-macOS/Linux 默认使用 LibreOffice：
-
-- `.doc/.wps` 会尝试通过 LibreOffice 转为 `.docx`
-- 如果转换失败，提示用户先手动转成 `.docx` 后再输入
-- 不执行自动编号转文本
-- 处理完成后提醒用户自动编号文本、段落可能没有正常格式化，需要人工检查
+1. 确认脚本路径：脚本位于本 Skill 目录下的 `scripts/wfp_cli.py`。如果当前工作目录不是 Skill 目录，使用 `SKILL.md` 所在目录推导脚本绝对路径，或先 `cd` 到 Skill 目录。
+2. 检查配置：CLI 会自动读取当前工作目录的 `wfp_config.json`。如果用户指定 `--config` 或明确给出配置文件，使用用户指定配置；否则说明将使用当前目录配置或内置默认配置。
+3. 检查输入：如果用户没有给出文件或目录，请先要求提供输入路径；告知支持 `.docx/.doc/.wps/.txt/.md`，目录默认递归处理。
+4. 检查转换条件：`.doc/.wps` 需要转换后端。Windows 通常用 WPS/Word；macOS/Linux 通常用 LibreOffice。转换失败时提示用户先另存为 `.docx`。
 
 ## 常用命令
 
-单文件：
-
 ```bash
-python skills/doc-format/scripts/wfp_cli.py format -i input.docx
+# 单文件
+python scripts/wfp_cli.py format -i report.docx
+
+# 指定输出文件
+python scripts/wfp_cli.py format -i report.docx -o report_final.docx
+
+# 多文件
+python scripts/wfp_cli.py format -i a.docx -i b.txt -i c.md -o ./formatted_output
+
+# 目录批量处理，默认递归并保留目录结构
+python scripts/wfp_cli.py format -i ./documents -o ./documents_formatted
+
+# 查看当前配置
+python scripts/wfp_cli.py show-config
+
+# 保存配置到当前目录 wfp_config.json
+python scripts/wfp_cli.py save-config --set body_font=宋体 --set body_size=12
 ```
 
-指定输出文件：
+## 配置处理流程
 
-```bash
-python skills/doc-format/scripts/wfp_cli.py format -i input.docx -o output.docx
-```
+当用户要求调整字体、字号、边距、行距、表格、符号等配置时：
 
-多个文件：
+1. 运行 `show-config` 了解当前配置来源和值。
+2. 将用户自然语言需求映射到配置字段。
+3. 用 `save-config --set ...` 或便利开关保存到当前目录 `wfp_config.json`，或保存到用户指定路径。
+4. 再运行 `format` 处理文档。
 
-```bash
-python skills/doc-format/scripts/wfp_cli.py format -i a.docx -i b.txt -o formatted_output
-```
-
-目录递归批量处理并保留结构：
-
-```bash
-python skills/doc-format/scripts/wfp_cli.py format -i ./documents -o ./documents_formatted
-```
-
-指定 LibreOffice：
-
-```bash
-python skills/doc-format/scripts/wfp_cli.py format -i old.doc --backend libreoffice --soffice /Applications/LibreOffice.app/Contents/MacOS/soffice
-```
-
-查看详细日志：
-
-```bash
-python skills/doc-format/scripts/wfp_cli.py format -i input.docx -v
-```
-
-## JSON 配置工作流
-
-默认使用脚本内置配置。脚本运行时会自动读取当前工作目录的 `wfp_config.json`；也可以用 `--config` 指定配置文件。
-
-查看当前配置：
-
-```bash
-python skills/doc-format/scripts/wfp_cli.py show-config
-```
-
-保存当前配置到当前目录：
-
-```bash
-python skills/doc-format/scripts/wfp_cli.py save-config
-```
-
-按用户要求修改并保存配置：
-
-```bash
-python skills/doc-format/scripts/wfp_cli.py save-config --set body_font=仿宋_GB2312 --set body_size=16
-```
-
-一次性使用内联 JSON：
-
-```bash
-python skills/doc-format/scripts/wfp_cli.py format -i input.docx --config-json "{\"force_a4\": true}"
-```
-
-常用可选增强项：
+常用便利开关：
 
 ```bash
 # 启用表格内容自动调整
-python skills/doc-format/scripts/wfp_cli.py save-config --enable-table-formatting
+python scripts/wfp_cli.py save-config --enable-table-formatting
 
-# 启用数字和字母单独字体，默认 Times New Roman
-python skills/doc-format/scripts/wfp_cli.py save-config --enable-custom-english-font --english-font "Times New Roman"
+# 数字和字母使用 Times New Roman
+python scripts/wfp_cli.py save-config --enable-custom-english-font --english-font "Times New Roman"
 
 # 启用符号标准化
-python skills/doc-format/scripts/wfp_cli.py save-config --normalize-punctuation
+python scripts/wfp_cli.py save-config --normalize-punctuation
 ```
 
-当用户完成配置后，提醒用户还可以按需启用：
+## 输出行为
 
-- 表格内容自动调整：`enable_table_formatting=true`
-- 自定义数字和字母字体：`use_custom_english_font=true`，`english_font` 默认 `Times New Roman`
-- 符号标准化：`normalize_punctuation=true`
+- 成功生成的 `.docx` 绝对路径写入 stdout。
+- 日志写入 stderr。
+- 退出码 `0` 表示全部成功，非 `0` 表示至少一个文件失败。
+- 多文件处理中单个文件失败不会阻止后续文件继续处理。
+- 处理失败时，最终回复应说明失败文件和错误原因。
 
-如果用户提出新的配置修改需求，先保存 `wfp_config.json`，再重新运行 `format` 转换一次。
+## 完成后必读
+
+每次完成格式化后，都要提醒用户打开输出文件抽查题目、副标题、标题层级、附件、图/表标题、页码和表格。
+
+如果处理过 `.doc/.wps` 或 Word/WPS 类文档，尤其要检查自动编号。自动编号未能确认转换成功时，编号文本、段落缩进、字体字号可能没有正常格式化；如果编号无法单独选中，说明可能仍是 Word/WPS 自动编号，必要时请将其转为手写文本编号后重新运行工具。
+
+表格内容自动调整、符号标准化属于更容易影响版面的增强项，重要文件建议在副本上检查效果。
+
+## Reference Files
+
+- 需要完整命令格式、参数说明、更多命令示例时，读取 `references/cli-reference.md`。
+- 需要把用户配置需求映射到字段、查看字号对照时，读取 `references/config-reference.md`。
+- 需要说明默认排版规则、标题识别、页面段落、TXT/MD、表格和附件规则时，读取 `references/formatting-rules.md`。
 
 ## Agent 使用准则
 
-1. 先确认输入是文件、多文件还是目录；目录默认递归处理。
-2. 如用户问“当前配置”，运行 `show-config` 并总结关键配置，不要手写猜测。
-3. 如用户要求修改配置，运行 `save-config --set key=value` 或便利开关，将配置保存到当前目录 `wfp_config.json`。
-4. 运行 `format` 时优先使用当前目录自动配置；用户给了配置文件时使用 `--config`。
-5. Windows 上遇到 `.doc/.wps` 转换失败时，明确告诉用户需要先另存为 `.docx`。
-6. macOS/Linux 上遇到 `.doc/.wps` 转换失败时，提示安装 LibreOffice 或先手动转为 `.docx`。
-7. macOS/Linux 环境下，在最终回复中提醒：自动编号文本、段落可能没有正常格式化，需要人工检查。
+1. 没有输入时不要直接运行 `format`。
+2. 用户询问配置时运行 `show-config`，不要凭记忆列配置。
+3. 用户提出配置修改时，优先保存配置，再用该配置处理文档。
+4. 用户只要求一次性临时调整时，可用 `--config-json` 或 `--set` 直接运行 `format`。
+5. 目录输入默认递归；只有用户明确要求“只处理当前目录”时才加 `--no-recursive`。
+6. 处理结束后必须提示用户检查自动编号所在标题和段落的转换效果。并提示用户，表格内容自动调整、数字和字母使用 Times New Roman、符号标准化功能未启用，如有需要可要求调整。

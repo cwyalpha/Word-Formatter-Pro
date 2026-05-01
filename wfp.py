@@ -1,41 +1,214 @@
+import json
+import logging
+import os
+import queue
+import re
+import shutil
+import sys
+import tempfile
+import threading
+import uuid
+
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext, Menu, font as tkfont
-import json
-import os
-import re
-import logging
-import shutil
-import win32com.client
-import tempfile
+
 from docx import Document
-from docx.shared import Pt, Cm, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
+from docx.document import Document as _Document
 from docx.enum.table import WD_ROW_HEIGHT_RULE
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-
-from docx.document import Document as _Document
 from docx.oxml.table import CT_Tbl
 from docx.oxml.text.paragraph import CT_P
+from docx.shared import Pt, Cm, RGBColor
 from docx.table import Table, _Cell
 from docx.text.paragraph import Paragraph
 
 from tkinterdnd2 import DND_FILES, TkinterDnD
 
+IS_WINDOWS = sys.platform.startswith('win')
+if IS_WINDOWS:
+    try:
+        import win32com.client
+    except ImportError:
+        win32com = None
+    try:
+        import pythoncom
+    except ImportError:
+        pythoncom = None
+else:
+    win32com = None
+    pythoncom = None
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-class WordProcessor:
-    def __init__(self, config, log_callback=None, remove_blank_lines=True):
-        self.config = config
-        self.temp_files = []
+BLANK_LINE_MODE_PRESERVE = '不改动任何空行'
+BLANK_LINE_MODE_DELETE_SINGLE = '删除单个空行，多个空行保留至1个空行'
+BLANK_LINE_MODE_KEEP_SINGLE = '保留单个空行，多个空行保留至1个空行'
+BLANK_LINE_MODE_OPTIONS = [
+    BLANK_LINE_MODE_PRESERVE,
+    BLANK_LINE_MODE_DELETE_SINGLE,
+    BLANK_LINE_MODE_KEEP_SINGLE,
+]
+DEFAULT_BLANK_LINE_MODE = BLANK_LINE_MODE_DELETE_SINGLE
+SUPPORTED_FILE_EXTENSIONS = ('.docx', '.doc', '.wps', '.txt', '.md')
+LARGE_FOLDER_FILE_CONFIRM_THRESHOLD = 1000
+
+def _initialize_com_for_thread(log_callback=None):
+    if not (IS_WINDOWS and pythoncom is not None):
+        return False
+    try:
+        pythoncom.CoInitialize()
+        return True
+    except Exception as e:
+        if log_callback:
+            log_callback(f"警告：后台线程初始化 COM 失败，将跳过 COM 自动化能力：{e}")
+        return False
+
+def _uninitialize_com_for_thread(initialized, log_callback=None):
+    if not initialized or pythoncom is None:
+        return
+    try:
+        pythoncom.CoUninitialize()
+    except Exception as e:
+        if log_callback:
+            log_callback(f"警告：后台线程释放 COM 失败：{e}")
+
+class WPSAppManager:
+    def __init__(self, log_callback=None):
         self.log_callback = log_callback
         self.com_app = None
-        self.remove_blank_lines = remove_blank_lines
+
+    def _log(self, message):
+        if self.log_callback:
+            self.log_callback(message)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.quit()
+        return False
+
+    @staticmethod
+    def _com_available():
+        return IS_WINDOWS and win32com is not None
+
+    @staticmethod
+    def _com_unavailable_message(file_ext=None):
+        if file_ext in ('.doc', '.wps'):
+            return (
+                f"当前环境不支持直接处理 {file_ext} 文件：该格式转换需要 Windows、"
+                "已安装的 WPS/Word，以及 pywin32。\n"
+                "请先将文件另存为 .docx 后再处理；当前环境仍可处理 .docx/.txt/.md 文件。"
+            )
+        return (
+            "当前环境无法使用 WPS/Word COM 自动化，已跳过需要 COM 的预处理步骤。\n"
+            "如果文档包含修订或 Word/WPS 自动编号，请在输出文件中人工检查编号和修订状态。"
+        )
+
+    def get_app(self):
+        if not self._com_available():
+            raise RuntimeError(self._com_unavailable_message())
+
+        if self.com_app is None:
+            self._log("首次需要，正在启动WPS/Word应用（独立进程）...")
+            try:
+                self.com_app = win32com.client.DispatchEx('KWPS.Application')
+                self._log("  > 已成功连接到WPS。")
+            except Exception:
+                try:
+                    self.com_app = win32com.client.DispatchEx('Word.Application')
+                    self._log("  > 已成功连接到Word。")
+                except Exception as e:
+                    raise RuntimeError(f"未能启动WPS或Word，请确保已安装。错误: {e}")
+
+            try:
+                self.com_app.Visible = False
+            except Exception:
+                pass
+            try:
+                self.com_app.DisplayAlerts = False
+            except Exception:
+                pass
+
+        return self.com_app
+
+    def quit(self):
+        if self.com_app:
+            self._log("所有任务完成，正在关闭WPS/Word应用...")
+            try:
+                self.com_app.Quit()
+            except Exception as e:
+                self._log(f"  > 警告：关闭应用时发生异常: {e}")
+            finally:
+                self.com_app = None
+                self._log("  > 应用已关闭。")
+
+class WordProcessor:
+    def __init__(self, config, log_callback=None, remove_blank_lines=True, blank_line_mode=None, com_manager=None):
+        self.config = config
+        self.temp_files = []
+        self.sys_temp_dir = tempfile.gettempdir()
+        self.log_callback = log_callback
+        self.com_manager = com_manager or WPSAppManager(log_callback)
+        self._owns_com_manager = com_manager is None
+        self.blank_line_mode = self._normalize_blank_line_mode(
+            blank_line_mode or self.config.get('blank_line_mode'),
+            remove_blank_lines=remove_blank_lines
+        )
+        self.remove_blank_lines = self.blank_line_mode == BLANK_LINE_MODE_DELETE_SINGLE
 
     def _log(self, message):
         if self.log_callback: self.log_callback(message)
 
+    @staticmethod
+    def _com_available():
+        return WPSAppManager._com_available()
+
+    @staticmethod
+    def _com_unavailable_message(file_ext=None):
+        return WPSAppManager._com_unavailable_message(file_ext)
+
+    @staticmethod
+    def _paragraph_has_ooxml(para, tag_name):
+        return para._p.find('.//' + qn(tag_name)) is not None
+
+    @classmethod
+    def _has_field_codes(cls, para):
+        return (
+            cls._paragraph_has_ooxml(para, 'w:fldChar')
+            or cls._paragraph_has_ooxml(para, 'w:instrText')
+        )
+
+    @classmethod
+    def _has_drawing_or_pict(cls, para):
+        return (
+            cls._paragraph_has_ooxml(para, 'w:drawing')
+            or cls._paragraph_has_ooxml(para, 'w:pict')
+        )
+
+    @classmethod
+    def _has_embedded_object(cls, para):
+        return cls._paragraph_has_ooxml(para, 'w:object')
+
+    @staticmethod
+    def _normalize_blank_line_mode(mode, remove_blank_lines=True):
+        if mode in BLANK_LINE_MODE_OPTIONS:
+            return mode
+        if mode in ('preserve', 'none'):
+            return BLANK_LINE_MODE_PRESERVE
+        if mode in ('delete_single', 'remove_single'):
+            return BLANK_LINE_MODE_DELETE_SINGLE
+        if mode in ('keep_single', 'compress'):
+            return BLANK_LINE_MODE_KEEP_SINGLE
+        if isinstance(mode, bool):
+            return BLANK_LINE_MODE_DELETE_SINGLE if mode else BLANK_LINE_MODE_KEEP_SINGLE
+        return BLANK_LINE_MODE_DELETE_SINGLE if remove_blank_lines else BLANK_LINE_MODE_KEEP_SINGLE
+
     def _cleanup_temp_files(self):
+        if not self.temp_files:
+            return
         self._log("正在清理本轮临时文件...")
         for f in self.temp_files:
             try:
@@ -46,27 +219,20 @@ class WordProcessor:
                 self._log(f"  > 警告：删除临时文件 {f} 失败: {e}")
         self.temp_files.clear()
 
+    def _make_temp_docx_path(self, prefix, base_name):
+        safe_base_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', '_', base_name).strip(' ._')
+        safe_base_name = (safe_base_name or 'document')[:80]
+        temp_name = f"~temp_{prefix}_{safe_base_name}_{os.getpid()}_{uuid.uuid4().hex[:8]}.docx"
+        temp_path = os.path.join(self.sys_temp_dir, temp_name)
+        self.temp_files.append(temp_path)
+        return temp_path
+
     def _get_wps_app(self):
-        if self.com_app is None:
-            self._log("首次需要，正在启动WPS/Word应用...")
-            try:
-                self.com_app = win32com.client.Dispatch('KWPS.Application')
-                self._log("  > 已成功连接到WPS。")
-            except Exception:
-                try:
-                    self.com_app = win32com.client.Dispatch('Word.Application')
-                    self._log("  > 已成功连接到Word。")
-                except Exception as e:
-                    raise RuntimeError(f"未能启动WPS或Word，请确保已安装。错误: {e}")
-            self.com_app.Visible = False
-        return self.com_app
+        return self.com_manager.get_app()
         
     def quit_com_app(self):
-        if self.com_app:
-            self._log("所有任务完成，正在关闭WPS/Word应用...")
-            self.com_app.Quit()
-            self.com_app = None
-            self._log("  > 应用已关闭。")
+        if self._owns_com_manager:
+            self.com_manager.quit()
 
     # ------------------------------------------------------------------
     # Conservative Chinese punctuation normalization
@@ -113,7 +279,7 @@ class WordProcessor:
 
     @classmethod
     def _normalize_ellipsis(cls, text):
-        dot_chars = {'.', '\uff0e', '\u3002'}
+        dot_chars = {'.', '．', '。'}
         chars = []
         i = 0
         while i < len(text):
@@ -128,7 +294,7 @@ class WordProcessor:
                 j += 1
 
             if j - i >= 3 and not cls._is_after_digit_or_latin(text, i):
-                chars.append('\u2026\u2026')
+                chars.append('……')
             else:
                 chars.append(text[i:j])
             i = j
@@ -138,21 +304,21 @@ class WordProcessor:
     @classmethod
     def _normalize_simple_punctuation(cls, text):
         replacements = {
-            ',': '\uff0c',
-            '.': '\u3002',
-            '\uff0e': '\u3002',
-            ';': '\uff1b',
-            ':': '\uff1a',
-            '?': '\uff1f',
-            '!': '\uff01',
+            ',': '，',
+            '.': '。',
+            '．': '。',
+            ';': '；',
+            ':': '：',
+            '?': '？',
+            '!': '！',
         }
         chars = list(text)
         for i, ch in enumerate(chars):
             if ch not in replacements:
                 continue
-            if ch in {'.', '\uff0e', '\u3002'}:
-                prev_is_dot = i > 0 and text[i - 1] in {'.', '\uff0e', '\u3002'}
-                next_is_dot = i + 1 < len(text) and text[i + 1] in {'.', '\uff0e', '\u3002'}
+            if ch in {'.', '．', '。'}:
+                prev_is_dot = i > 0 and text[i - 1] in {'.', '．', '。'}
+                next_is_dot = i + 1 < len(text) and text[i + 1] in {'.', '．', '。'}
                 if prev_is_dot or next_is_dot:
                     continue
             if cls._is_after_digit_or_latin(text, i):
@@ -163,8 +329,8 @@ class WordProcessor:
     @classmethod
     def _normalize_bracket_pairs(cls, text):
         pair_sets = [
-            ({'(': '\uff08', '\uff08': '\uff08'}, {')': '\uff09', '\uff09': '\uff09'}),
-            ({'[': '\uff3b', '\uff3b': '\uff3b'}, {']': '\uff3d', '\uff3d': '\uff3d'}),
+            ({'(': '（', '（': '（'}, {')': '）', '）': '）'}),
+            ({'[': '［', '［': '［'}, {']': '］', '］': '］'}),
         ]
         result = text
 
@@ -231,15 +397,15 @@ class WordProcessor:
         result = cls._normalize_ellipsis(result)
         result = cls._normalize_quote_pairs(
             result,
-            {'"', '\u201c', '\u201d', '\u201e', '\u201f', '\u300c', '\u300d'},
-            '\u201c',
-            '\u201d',
+            {'"', '“', '”', '„', '‟', '「', '」'},
+            '“',
+            '”',
         )
         result = cls._normalize_quote_pairs(
             result,
-            {"'", '\u2018', '\u2019', '\u201a', '\u201b'},
-            '\u2018',
-            '\u2019',
+            {"'", '‘', '’', '‚', '‛'},
+            '‘',
+            '’',
             skip_inner_latin=True,
         )
         result = cls._normalize_simple_punctuation(result)
@@ -266,7 +432,7 @@ class WordProcessor:
         text = para.text
         if not text.strip() or not para.runs:
             return False
-        if '<w:fldChar' in para._p.xml or '<w:instrText' in para._p.xml:
+        if self._has_field_codes(para):
             return False
 
         normalized = self._normalize_symbols_in_text(text)
@@ -392,11 +558,11 @@ class WordProcessor:
     # Blank line removal for plain text sources
     # ------------------------------------------------------------------
     @staticmethod
-    def _remove_blank_lines_from_text(text):
+    def _remove_blank_lines_from_text(text, keep_single_blank_lines=False):
         """
-        Remove extra blank lines from txt/md text:
-        - Single blank line: delete
+        Normalize blank lines from txt/md text:
         - 2+ consecutive blank lines: merge to 1
+        - Single blank line: delete by default, or keep when requested
         """
         if not text:
             return text
@@ -409,15 +575,31 @@ class WordProcessor:
             if line.strip() == '':
                 blank_count += 1
             else:
-                if blank_count >= 2:
+                if blank_count >= 2 or (blank_count == 1 and keep_single_blank_lines):
                     result.append('')
                 result.append(line)
                 blank_count = 0
 
-        if blank_count >= 2:
+        if blank_count >= 2 or (blank_count == 1 and keep_single_blank_lines):
             result.append('')
 
         return '\n'.join(result)
+
+    def _normalize_text_blank_lines(self, text):
+        if self.blank_line_mode == BLANK_LINE_MODE_PRESERVE:
+            return text
+        return self._remove_blank_lines_from_text(
+            text,
+            keep_single_blank_lines=self.blank_line_mode == BLANK_LINE_MODE_KEEP_SINGLE
+        )
+
+    def _log_blank_line_mode(self, source_name):
+        if self.blank_line_mode == BLANK_LINE_MODE_PRESERVE:
+            self._log(f"  > 未改动 {source_name} 中的空行。")
+        elif self.blank_line_mode == BLANK_LINE_MODE_KEEP_SINGLE:
+            self._log(f"  > 已保留 {source_name} 中的单个空行，并将多个空行合并为 1 个。")
+        else:
+            self._log(f"  > 已删除 {source_name} 中的单个空行，并将多个空行合并为 1 个。")
 
     # ------------------------------------------------------------------
     # Text file reading
@@ -438,26 +620,22 @@ class WordProcessor:
     def convert_to_docx(self, input_path):
         file_ext = os.path.splitext(input_path)[1].lower()
         is_from_txt = (file_ext in ('.txt', '.md'))
-        temp_dir = os.path.dirname(input_path)
         base_name = os.path.splitext(os.path.basename(input_path))[0]
 
         if file_ext == '.docx':
             self._log("检测到 .docx 文件，正在创建安全的处理副本...")
-            temp_docx_path = os.path.join(temp_dir, f"~temp_copy_{base_name}.docx")
+            temp_docx_path = self._make_temp_docx_path("copy", base_name)
             shutil.copy2(input_path, temp_docx_path)
-            self.temp_files.append(temp_docx_path)
             self._log(f"  > 副本创建成功: {os.path.basename(temp_docx_path)}")
             return temp_docx_path, False
 
-        temp_docx_path = os.path.join(temp_dir, f"~temp_converted_{base_name}.docx")
-        self.temp_files.append(temp_docx_path)
+        temp_docx_path = self._make_temp_docx_path("converted", base_name)
 
         if file_ext == '.txt':
             self._log("检测到 .txt 文件，正在创建 .docx...")
             text_content = self._read_text_file(input_path)
-            if self.remove_blank_lines:
-                text_content = self._remove_blank_lines_from_text(text_content)
-                self._log("  > 已删除 TXT 中的多余空行。")
+            text_content = self._normalize_text_blank_lines(text_content)
+            self._log_blank_line_mode("TXT")
             doc = Document()
             for line in text_content.split('\n'):
                 doc.add_paragraph(line.strip())
@@ -468,9 +646,8 @@ class WordProcessor:
             self._log("检测到 .md 文件，正在清理 Markdown 标记并创建 .docx...")
             raw_text = self._read_text_file(input_path)
             cleaned_text = self._clean_markdown(raw_text)
-            if self.remove_blank_lines:
-                cleaned_text = self._remove_blank_lines_from_text(cleaned_text)
-                self._log("  > 已删除 Markdown 文本中的多余空行。")
+            cleaned_text = self._normalize_text_blank_lines(cleaned_text)
+            self._log_blank_line_mode("Markdown 文本")
             doc = Document()
             for line in cleaned_text.split('\n'):
                 doc.add_paragraph(line.strip())
@@ -479,19 +656,29 @@ class WordProcessor:
             return temp_docx_path, is_from_txt
         elif file_ext in ['.wps', '.doc']:
             self._log(f"正在转换 {file_ext} 文件为 .docx...")
+            if not self._com_available():
+                raise RuntimeError(self._com_unavailable_message(file_ext))
             app = self._get_wps_app()
-            doc_com = app.Documents.Open(os.path.abspath(input_path), ReadOnly=1)
-            doc_com.SaveAs2(os.path.abspath(temp_docx_path), FileFormat=12)
-            doc_com.Close()
+            doc_com = None
+            try:
+                doc_com = app.Documents.Open(os.path.abspath(input_path), ReadOnly=1)
+                doc_com.SaveAs2(os.path.abspath(temp_docx_path), FileFormat=12)
+            finally:
+                if doc_com is not None:
+                    doc_com.Close()
             self._log("文件格式转换完成。")
             return temp_docx_path, is_from_txt
         
         raise ValueError(f"不支持的文件格式: {file_ext}")
 
     def _preprocess_com_tasks(self, docx_path):
+        if not self._com_available():
+            self._log(f"警告：{self._com_unavailable_message()}")
+            return
         self._log("正在对副本执行预处理（接受所有修订、转换自动编号）...")
-        app = self._get_wps_app()
+        doc_com = None
         try:
+            app = self._get_wps_app()
             doc_com = app.Documents.Open(os.path.abspath(docx_path))
             
             doc_com.TrackRevisions = False
@@ -511,10 +698,15 @@ class WordProcessor:
             doc_com.TrackRevisions = False
             
             doc_com.Save()
-            doc_com.Close()
             self._log("预处理完成。")
         except Exception as e:
             self._log(f"警告：执行预处理任务时出错: {e}")
+        finally:
+            if doc_com is not None:
+                try:
+                    doc_com.Close()
+                except Exception as e:
+                    self._log(f"  > 警告：关闭预处理文档时发生异常: {e}")
 
     def _create_page_number(self, paragraph, text):
         font_name = self.config['page_number_font']
@@ -595,11 +787,19 @@ class WordProcessor:
         return None, None
 
     def _strip_leading_whitespace(self, para):
-        if not para.runs: return
-        while para.runs and not para.runs[0].text.strip():
-            p = para._p
-            p.remove(para.runs[0]._r)
-        if not para.runs: return
+        if not para.runs:
+            return
+        while para.runs:
+            first_run = para.runs[0]
+            r_elem = first_run._r
+            children = [child for child in r_elem if child.tag != qn('w:rPr')]
+            only_text = all(child.tag == qn('w:t') for child in children)
+            if not only_text or first_run.text.strip():
+                break
+            para._p.remove(r_elem)
+
+        if not para.runs:
+            return
         first_run = para.runs[0]
         original_text = first_run.text
         stripped_text = original_text.lstrip()
@@ -1128,7 +1328,7 @@ class WordProcessor:
         if not is_from_txt:
             self._log("正在扫描图表标题...")
             for idx, block in enumerate(all_blocks):
-                is_pic_para = isinstance(block, Paragraph) and ('<w:drawing>' in block._p.xml or '<w:pict>' in block._p.xml)
+                is_pic_para = isinstance(block, Paragraph) and self._has_drawing_or_pict(block)
                 is_table = isinstance(block, Table)
                 
                 if not (is_pic_para or is_table): continue
@@ -1235,10 +1435,10 @@ class WordProcessor:
             if not para.text.strip(): 
                 self._log(f"段落 {current_block_num}: 空白 - 跳过"); block_idx += 1; continue
             
-            is_pic = '<w:drawing>' in para._p.xml or '<w:pict>' in para._p.xml
-            is_embedded_obj = '<w:object>' in para._p.xml
+            is_pic = self._has_drawing_or_pict(para)
+            is_embedded_obj = self._has_embedded_object(para)
             if is_pic or is_embedded_obj:
-                log_msg = "图片" if is_pic else "附件"
+                log_msg = "图片" if is_pic else "嵌入对象"
                 self._log(f"段落 {current_block_num}: {log_msg} - 仅格式化文字")
                 
                 text_to_check = para.text.lstrip()
@@ -1350,13 +1550,13 @@ class WordProcessor:
                         
                         self._reset_pagination_properties(para_subtitle)
                 
-                # 计算下一个要处理的块索引
-                if att_subtitle_indices:
-                    next_idx = max(att_subtitle_indices) + 1
-                elif att_title_indices:
-                    next_idx = max(att_title_indices) + 1
+                # 计算下一个要处理的块索引。没有附件标题/副标题时，
+                # 只跳过附件标识本段，避免漏处理紧随其后的正文段落。
+                handled_indices = att_title_indices + att_subtitle_indices
+                if handled_indices:
+                    next_idx = max(handled_indices) + 1
                 else:
-                    next_idx = search_idx
+                    next_idx = block_idx + 1
                 
                 block_idx = next_idx
                 continue
@@ -1494,9 +1694,11 @@ class WordProcessor:
 class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
-        master.title("Word文档智能排版工具 v2.6.9")
+        master.title("Word文档智能排版工具 v2.7.1")
         master.geometry("1200x860")
         master.minsize(1200, 860)
+        self.log_queue = queue.Queue()
+        self.is_processing = False
 
         self.font_size_map = {
             '一号 (26pt)': 26, '小一 (24pt)': 24, '二号 (22pt)': 22, '小二 (18pt)': 18,
@@ -1518,7 +1720,7 @@ class WordFormatterGUI:
             'left_indent_cm': 0.0, 'right_indent_cm': 0.0,
             'set_outline': True, 'enable_attachment_formatting': True,
             'force_a4': False, 'use_custom_english_font': False, 'english_font': 'Times New Roman',
-            'remove_blank_lines': True, 'normalize_punctuation': False,
+            'blank_line_mode': DEFAULT_BLANK_LINE_MODE, 'normalize_punctuation': False,
             'enable_table_formatting': False, 'table_header_font': '仿宋_GB2312',
             'table_font': '仿宋_GB2312',
             'table_size': 12, 'table_line_spacing': 22, 'table_row_height_cm': 0.7,
@@ -1545,13 +1747,14 @@ class WordFormatterGUI:
         self.enable_attachment_var = tk.BooleanVar(value=self.default_params['enable_attachment_formatting'])
         self.force_a4_var = tk.BooleanVar(value=self.default_params['force_a4'])
         self.use_custom_english_font_var = tk.BooleanVar(value=self.default_params['use_custom_english_font'])
-        self.remove_blank_lines_var = tk.BooleanVar(value=self.default_params['remove_blank_lines'])
         self.normalize_punctuation_var = tk.BooleanVar(value=self.default_params['normalize_punctuation'])
         self.enable_table_var = tk.BooleanVar(value=self.default_params['enable_table_formatting'])
         self.table_auto_col_width_var = tk.BooleanVar(value=self.default_params['table_auto_col_width'])
         self.table_header_bold_var = tk.BooleanVar(value=self.default_params['table_header_bold'])
         self.table_smart_align_var = tk.BooleanVar(value=self.default_params['table_smart_align'])
         self.table_unified_borders_var = tk.BooleanVar(value=self.default_params['table_unified_borders'])
+        self.progress_var = tk.DoubleVar(value=0.0)
+        self.progress_text_var = tk.StringVar(value="")
         self.entries = {}
         self.attachment_option_widgets = []
         self.table_option_widgets = []
@@ -1562,7 +1765,9 @@ class WordFormatterGUI:
         self.create_widgets()
         self.load_initial_config()
 
+        self.master.protocol("WM_DELETE_WINDOW", self._on_close)
         self.master.after(250, self.set_initial_pane_position)
+        self.master.after(100, self._check_log_queue)
 
     def _get_installed_fonts(self):
         try:
@@ -1696,11 +1901,21 @@ class WordFormatterGUI:
         list_frame = ttk.LabelFrame(file_tab, text="待处理文件列表（可拖拽文件或文件夹）")
         list_frame.pack(fill=tk.BOTH, expand=True, pady=5)
         
-        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
-        self.file_listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, selectmode=tk.EXTENDED)
-        scrollbar.config(command=self.file_listbox.yview)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.file_listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        v_scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL)
+        h_scrollbar = ttk.Scrollbar(list_frame, orient=tk.HORIZONTAL)
+        self.file_listbox = tk.Listbox(
+            list_frame,
+            yscrollcommand=v_scrollbar.set,
+            xscrollcommand=h_scrollbar.set,
+            selectmode=tk.EXTENDED
+        )
+        v_scrollbar.config(command=self.file_listbox.yview)
+        h_scrollbar.config(command=self.file_listbox.xview)
+        self.file_listbox.grid(row=0, column=0, sticky='nsew')
+        v_scrollbar.grid(row=0, column=1, sticky='ns')
+        h_scrollbar.grid(row=1, column=0, sticky='ew')
+        list_frame.rowconfigure(0, weight=1)
+        list_frame.columnconfigure(0, weight=1)
         
         self.file_listbox.drop_target_register(DND_FILES)
         self.file_listbox.dnd_bind('<<Drop>>', self.handle_drop)
@@ -1727,12 +1942,24 @@ class WordFormatterGUI:
 
         left_action_frame = ttk.Frame(left_frame)
         left_action_frame.pack(fill=tk.X, pady=(5, 0))
-        ttk.Button(
+        self.start_btn = ttk.Button(
             left_action_frame,
             text="开始排版",
             style='Success.TButton',
             command=self.start_processing
-        ).pack(fill=tk.X, ipady=8)
+        )
+        self.start_btn.pack(fill=tk.X, ipady=8)
+
+        progress_frame = ttk.Frame(left_frame)
+        progress_frame.pack(fill=tk.X, pady=(5, 0))
+        self.progressbar = ttk.Progressbar(
+            progress_frame,
+            mode='determinate',
+            variable=self.progress_var,
+            maximum=100
+        )
+        self.progressbar.pack(fill=tk.X)
+        ttk.Label(progress_frame, textvariable=self.progress_text_var, foreground="grey").pack(anchor=tk.W)
 
         log_frame = ttk.LabelFrame(left_frame, text="调试日志")
         log_frame.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
@@ -1915,7 +2142,9 @@ class WordFormatterGUI:
         create_combo("数字和字母字体", 'english_font', self.font_options['english'], row, 2, readonly=False)
         self._update_english_font_state()
         row += 1
-        ttk.Checkbutton(params_frame, text="删除 TXT/MD 文件中的空行 (单个空行删除，连续多个合并为1个)", variable=self.remove_blank_lines_var).grid(row=row, columnspan=6, sticky=tk.W, padx=3)
+        blank_line_combo = create_combo("TXT/MD空行处理", 'blank_line_mode', BLANK_LINE_MODE_OPTIONS, row, 0)
+        blank_line_combo.configure(width=42)
+        blank_line_combo.grid_configure(columnspan=5)
         row += 1
 
         # 按钮区域
@@ -1956,8 +2185,59 @@ class WordFormatterGUI:
 
         self._update_listbox_placeholder()
 
+    def _append_log_message(self, message):
+        try:
+            self.debug_text.config(state='normal')
+            self.debug_text.insert(tk.END, message + '\n')
+            self.debug_text.config(state='disabled')
+            self.debug_text.see(tk.END)
+        except tk.TclError:
+            pass
+
+    def _check_log_queue(self):
+        try:
+            while True:
+                self._append_log_message(self.log_queue.get_nowait())
+        except queue.Empty:
+            pass
+        try:
+            self.master.after(100, self._check_log_queue)
+        except tk.TclError:
+            pass
+
     def log_to_debug_window(self, message):
-        self.master.update_idletasks(); self.debug_text.config(state='normal'); self.debug_text.insert(tk.END, message + '\n'); self.debug_text.config(state='disabled'); self.debug_text.see(tk.END)
+        self.log_queue.put(message)
+
+    def _drain_log_queue(self):
+        try:
+            while True:
+                self._append_log_message(self.log_queue.get_nowait())
+        except queue.Empty:
+            pass
+
+    def _clear_debug_log(self):
+        self._drain_log_queue()
+        try:
+            self.debug_text.config(state='normal')
+            self.debug_text.delete('1.0', tk.END)
+            self.debug_text.config(state='disabled')
+        except tk.TclError:
+            pass
+
+    def _run_on_main(self, callback, *args):
+        try:
+            self.master.after(0, lambda: callback(*args))
+        except tk.TclError:
+            pass
+
+    def _set_progress(self, value, text=""):
+        def update():
+            try:
+                self.progress_var.set(value)
+                self.progress_text_var.set(text)
+            except tk.TclError:
+                pass
+        self._run_on_main(update)
     
     def load_initial_config(self):
         if os.path.exists(self.default_config_path):
@@ -1973,11 +2253,24 @@ class WordFormatterGUI:
             self.log_to_debug_window("未找到默认配置文件，将使用内置默认值。")
             self.load_defaults()
 
+    @staticmethod
+    def _legacy_blank_line_mode(remove_blank_lines):
+        return BLANK_LINE_MODE_DELETE_SINGLE if remove_blank_lines else BLANK_LINE_MODE_KEEP_SINGLE
+
     def _apply_config(self, loaded_config):
         loaded_config = dict(loaded_config)
         if 'use_custom_english_font' not in loaded_config and loaded_config.get('use_times_new_roman'):
             loaded_config['use_custom_english_font'] = True
             loaded_config.setdefault('english_font', 'Times New Roman')
+        if 'blank_line_mode' not in loaded_config:
+            loaded_config['blank_line_mode'] = self._legacy_blank_line_mode(
+                loaded_config.get('remove_blank_lines', True)
+            )
+        else:
+            loaded_config['blank_line_mode'] = WordProcessor._normalize_blank_line_mode(
+                loaded_config.get('blank_line_mode'),
+                remove_blank_lines=loaded_config.get('remove_blank_lines', True)
+            )
         loaded_config = {**self.default_params, **loaded_config}
         for key, default_value in self.default_params.items():
             value = loaded_config.get(key)
@@ -1987,7 +2280,6 @@ class WordFormatterGUI:
         self.enable_attachment_var.set(loaded_config.get('enable_attachment_formatting', True))
         self.force_a4_var.set(loaded_config.get('force_a4', False))
         self.use_custom_english_font_var.set(loaded_config.get('use_custom_english_font', False))
-        self.remove_blank_lines_var.set(loaded_config.get('remove_blank_lines', True))
         self.normalize_punctuation_var.set(loaded_config.get('normalize_punctuation', False))
         self.enable_table_var.set(loaded_config.get('enable_table_formatting', False))
         self.table_auto_col_width_var.set(loaded_config.get('table_auto_col_width', True))
@@ -2038,7 +2330,6 @@ class WordFormatterGUI:
         config['enable_attachment_formatting'] = self.enable_attachment_var.get()
         config['force_a4'] = self.force_a4_var.get()
         config['use_custom_english_font'] = self.use_custom_english_font_var.get()
-        config['remove_blank_lines'] = self.remove_blank_lines_var.get()
         config['normalize_punctuation'] = self.normalize_punctuation_var.get()
         config['enable_table_formatting'] = self.enable_table_var.get()
         config['table_auto_col_width'] = self.table_auto_col_width_var.get()
@@ -2082,22 +2373,41 @@ class WordFormatterGUI:
         paths = self.master.tk.splitlist(event.data)
         self._add_paths_to_listbox(paths)
 
+    def _should_scan_folder(self, folder_path):
+        file_count = 0
+        for _, _, files in os.walk(folder_path):
+            file_count += len(files)
+            if file_count > LARGE_FOLDER_FILE_CONFIRM_THRESHOLD:
+                folder_name = os.path.basename(os.path.normpath(folder_path)) or folder_path
+                return messagebox.askyesno(
+                    "确认",
+                    f"文件夹“{folder_name}”包含超过 {LARGE_FOLDER_FILE_CONFIRM_THRESHOLD} 个文件，继续扫描可能需要较长时间。\n\n确定继续扫描吗？",
+                    parent=self.master
+                )
+        return True
+
     def _add_paths_to_listbox(self, paths):
         current_files = set(self.file_listbox.get(0, tk.END))
         added_count = 0
+        skipped_dirs = 0
         
         for path in paths:
             if os.path.isdir(path):
+                if not self._should_scan_folder(path):
+                    skipped_dirs += 1
+                    self.log_to_debug_window(f"已跳过文件夹: {path}")
+                    continue
+
                 for root, _, files in os.walk(path):
                     for f in files:
-                        if f.lower().endswith(('.docx', '.doc', '.wps', '.txt', '.md')):
+                        if f.lower().endswith(SUPPORTED_FILE_EXTENSIONS):
                             full_path = os.path.join(root, f)
                             if full_path not in current_files:
                                 self.file_listbox.insert(tk.END, full_path)
                                 current_files.add(full_path)
                                 added_count += 1
             elif os.path.isfile(path):
-                if path.lower().endswith(('.docx', '.doc', '.wps', '.txt', '.md')):
+                if path.lower().endswith(SUPPORTED_FILE_EXTENSIONS):
                     if path not in current_files:
                         self.file_listbox.insert(tk.END, path)
                         current_files.add(path)
@@ -2105,6 +2415,8 @@ class WordFormatterGUI:
         
         if added_count > 0:
             self.log_to_debug_window(f"通过按钮或拖拽添加了 {added_count} 个新文件。")
+        if skipped_dirs > 0:
+            self.log_to_debug_window(f"已跳过 {skipped_dirs} 个大文件夹。")
         
         self._update_listbox_placeholder()
 
@@ -2136,7 +2448,7 @@ class WordFormatterGUI:
         help_text_widget = scrolledtext.ScrolledText(help_win, wrap=tk.WORD, state='disabled')
         help_text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         help_content = """
-Word文档智能排版工具 v2.6.9 - 使用说明
+Word文档智能排版工具 v2.7.1 - 使用说明
 
 本工具旨在提供一键式的专业文档排版体验，支持批量处理和高度自定义。
 
@@ -2174,7 +2486,8 @@ Word文档智能排版工具 v2.6.9 - 使用说明
 - 豁免内容：图片、嵌入对象等内容会自动跳过格式化；表格仅在勾选“启用表格自动调整”后处理。
 - 参数自定义：所有核心参数均可在界面调整。配置方案可【保存】和【加载】。
 - Markdown 支持：.md 文件会自动清理 Markdown 标记（标题#、粗体**、链接[]()、图片![]()等）后转为纯文本进行排版。
-- 空行删除：默认删除 TXT/MD 文件中的多余空行（单个空行直接删除，连续2个以上合并为1个），可在选项中关闭。
+- 空行处理：TXT/MD 支持三种模式：不改动任何空行；删除单个空行且多个空行保留至1个空行；保留单个空行且多个空行保留至1个空行。默认使用“删除单个空行，多个空行保留至1个空行”。
+- 跨平台说明：非 Windows 或未安装 pywin32 时，可处理 .docx/.txt/.md；.doc/.wps 需先另存为 .docx，且自动编号转文本等 COM 预处理会跳过。
 
 【安全提示】
 本工具【绝对不会】修改您的任何原始文件。所有操作都在后台的临时副本上进行，确保源文件100%安全。
@@ -2184,82 +2497,160 @@ Word文档智能排版工具 v2.6.9 - 使用说明
         help_text_widget.config(state='disabled')
 
     def start_processing(self):
+        if self.is_processing:
+            messagebox.showinfo("提示", "正在处理中，请稍候...", parent=self.master)
+            return
+
         warning_title = "处理前重要提示"
         warning_message = (
             "为了防止数据丢失，请在继续前关闭所有已打开的Word和WPS文档（包括wps、表格、PPT等所有文档）。\n\n"
-            "本程序在转换文件格式时需要调用Word/WPS程序，这可能会导致您未保存的工作被强制关闭。\n\n"
+            "本程序在转换文件格式时可能需要调用Word/WPS程序，这可能会影响未保存的工作。\n\n"
             "您确定要继续吗？"
         )
-        if not messagebox.askokcancel(warning_title, warning_message):
+        if not messagebox.askokcancel(warning_title, warning_message, parent=self.master):
             self.log_to_debug_window("用户已取消操作。")
             return
-            
-        self.debug_text.config(state='normal'); self.debug_text.delete('1.0', tk.END); self.debug_text.config(state='disabled')
-        
-        collected_config = self.collect_config()
-        remove_blank_lines = collected_config.pop('remove_blank_lines', True)
-        processor = WordProcessor(collected_config, self.log_to_debug_window, remove_blank_lines=remove_blank_lines)
+
         active_tab_index = self.notebook.index(self.notebook.select())
+        collected_config = self.collect_config()
+        file_list = []
+        text_content = ""
+        output_dir = None
+        output_path = None
 
-        try:
-            if active_tab_index == 0:
-                file_list = self.file_listbox.get(0, tk.END)
-                if not file_list:
-                    messagebox.showwarning("警告", "文件列表为空，请先添加文件！"); return
-                output_dir = filedialog.askdirectory(title="请选择一个文件夹用于存放处理后的文件")
-                if not output_dir: return
+        if active_tab_index == 0:
+            file_list = list(self.file_listbox.get(0, tk.END))
+            if not file_list:
+                messagebox.showwarning("警告", "文件列表为空，请先添加文件！", parent=self.master)
+                return
+            output_dir = filedialog.askdirectory(title="请选择一个文件夹用于存放处理后的文件")
+            if not output_dir:
+                return
+        elif active_tab_index == 1:
+            text_content = self.direct_text_input.get('1.0', tk.END).strip()
+            if not text_content:
+                messagebox.showwarning("警告", "文本框内容为空！", parent=self.master)
+                return
+            output_path = filedialog.asksaveasfilename(
+                defaultextension=".docx",
+                filetypes=[("Word Document", "*.docx")],
+                initialfile="formatted_document.docx"
+            )
+            if not output_path:
+                return
 
-                success_count, fail_count = 0, 0
-                for i, input_path in enumerate(file_list):
+        self._clear_debug_log()
+        self.is_processing = True
+        self.start_btn.config(state='disabled', text="排版中，请稍候...")
+        self._set_progress(0, "开始处理...")
+
+        def worker():
+            com_initialized = _initialize_com_for_thread(self.log_to_debug_window)
+            try:
+                with WPSAppManager(self.log_to_debug_window) as com_mgr:
+                    processor = WordProcessor(
+                        collected_config,
+                        self.log_to_debug_window,
+                        com_manager=com_mgr
+                    )
+                    if active_tab_index == 0:
+                        self._process_files(processor, file_list, output_dir)
+                    else:
+                        self._process_text(processor, text_content, output_path)
+            except Exception as e:
+                logging.error(f"处理过程中发生严重错误: {e}", exc_info=True)
+                self.log_to_debug_window(f"\n❌ 处理过程中发生严重错误：\n{e}")
+                self._set_progress(100, "处理失败")
+
+                def show_error(err=e):
                     try:
-                        self.log_to_debug_window(f"\n--- 开始处理文件 {i+1}/{len(file_list)}: {os.path.basename(input_path)} ---")
-                        base_name = os.path.splitext(os.path.basename(input_path))[0]
-                        output_path = os.path.join(output_dir, f"{base_name}_formatted.docx")
-                        processor.format_document(input_path, output_path)
-                        self.log_to_debug_window(f"✅ 文件处理成功，已保存至: {output_path}")
-                        success_count += 1
-                    except Exception as e:
-                        logging.error(f"处理文件失败: {input_path}\n{e}", exc_info=True)
-                        self.log_to_debug_window(f"\n❌ 处理文件 {os.path.basename(input_path)} 时发生严重错误：\n{e}")
-                        fail_count += 1
-                    finally:
-                        processor._cleanup_temp_files()
-                
-                summary_message = f"批量处理完成！\n\n成功: {success_count}个\n失败: {fail_count}个"
-                if fail_count > 0: summary_message += "\n\n失败详情请查看日志窗口。"
-                messagebox.showinfo("完成", summary_message)
-                self.log_to_debug_window(f"\n🎉 {summary_message}")
+                        messagebox.showerror("错误", f"处理过程中发生错误：\n{err}", parent=self.master)
+                    except tk.TclError:
+                        pass
 
-            elif active_tab_index == 1:
-                text_content = self.direct_text_input.get('1.0', tk.END).strip()
-                if not text_content:
-                    messagebox.showwarning("警告", "文本框内容为空！"); return
-                output_path = filedialog.asksaveasfilename(defaultextension=".docx", filetypes=[("Word Document", "*.docx")], initialfile="formatted_document.docx")
-                if not output_path: return
-                
-                temp_file_path = None
+                self._run_on_main(show_error)
+            finally:
+                _uninitialize_com_for_thread(com_initialized, self.log_to_debug_window)
+                self._run_on_main(self._restore_after_processing)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _process_files(self, processor, file_list, output_dir):
+        success_count, fail_count = 0, 0
+        total = len(file_list)
+        for i, input_path in enumerate(file_list, start=1):
+            base_name = os.path.basename(input_path)
+            self._set_progress((i - 1) / total * 100, f"处理中 {i}/{total}: {base_name}")
+            try:
+                self.log_to_debug_window(f"\n--- 开始处理文件 {i}/{total}: {base_name} ---")
+                output_name = os.path.splitext(base_name)[0]
+                output_path = os.path.join(output_dir, f"{output_name}_formatted.docx")
+                processor.format_document(input_path, output_path)
+                self.log_to_debug_window(f"✅ 文件处理成功，已保存至: {output_path}")
+                success_count += 1
+            except Exception as e:
+                logging.error(f"处理文件失败: {input_path}\n{e}", exc_info=True)
+                self.log_to_debug_window(f"\n❌ 处理文件 {base_name} 时发生严重错误：\n{e}")
+                fail_count += 1
+            finally:
+                processor._cleanup_temp_files()
+
+        summary_message = f"批量处理完成！\n\n成功: {success_count}个\n失败: {fail_count}个"
+        if fail_count > 0:
+            summary_message += "\n\n失败详情请查看日志窗口。"
+        self._set_progress(100, f"完成（成功 {success_count} / 失败 {fail_count}）")
+        self.log_to_debug_window(f"\n🎉 {summary_message}")
+
+        def show_summary(msg=summary_message):
+            try:
+                messagebox.showinfo("完成", msg, parent=self.master)
+            except tk.TclError:
+                pass
+
+        self._run_on_main(show_summary)
+
+    def _process_text(self, processor, text_content, output_path):
+        self._set_progress(20, "处理文本...")
+        temp_file_path = None
+        try:
+            fd, temp_file_path = tempfile.mkstemp(suffix=".txt", text=True)
+            with os.fdopen(fd, 'w', encoding='utf-8') as tmp:
+                tmp.write(text_content)
+
+            self.log_to_debug_window("\n--- 开始处理输入的文本 ---")
+            processor.format_document(temp_file_path, output_path)
+            self._set_progress(100, "完成")
+            self.log_to_debug_window("\n🎉 排版全部完成！")
+
+            def show_done(path=output_path):
                 try:
-                    fd, temp_file_path = tempfile.mkstemp(suffix=".txt", text=True)
-                    with os.fdopen(fd, 'w', encoding='utf-8') as tmp: tmp.write(text_content)
-                    
-                    self.log_to_debug_window(f"\n--- 开始处理输入的文本 ---")
-                    processor.format_document(temp_file_path, output_path)
-                    self.log_to_debug_window("\n🎉 排版全部完成！")
-                    messagebox.showinfo("完成", f"文档排版成功！\n文件已保存至：\n{output_path}")
-                finally:
-                    processor._cleanup_temp_files()
-                    if temp_file_path and os.path.exists(temp_file_path):
-                        try:
-                            os.remove(temp_file_path)
-                            self.log_to_debug_window(f"  > 输入文本的临时文件已删除")
-                        except OSError: pass
-        
-        except Exception as e:
-            logging.error(f"处理过程中发生严重错误: {e}", exc_info=True)
-            self.log_to_debug_window(f"\n❌ 处理过程中发生严重错误：\n{e}")
-            messagebox.showerror("错误", f"处理过程中发生错误：\n{e}")
+                    messagebox.showinfo("完成", f"文档排版成功！\n文件已保存至：\n{path}", parent=self.master)
+                except tk.TclError:
+                    pass
+
+            self._run_on_main(show_done)
         finally:
-            processor.quit_com_app()
+            processor._cleanup_temp_files()
+            if temp_file_path and os.path.exists(temp_file_path):
+                try:
+                    os.remove(temp_file_path)
+                    self.log_to_debug_window("  > 输入文本的临时文件已删除")
+                except OSError:
+                    pass
+
+    def _restore_after_processing(self):
+        self.is_processing = False
+        try:
+            self.start_btn.config(state='normal', text="开始排版")
+        except tk.TclError:
+            pass
+
+    def _on_close(self):
+        if self.is_processing:
+            if not messagebox.askyesno("确认", "任务仍在进行中，确定要退出吗？", parent=self.master):
+                return
+        self._drain_log_queue()
+        self.master.destroy()
 
 if __name__ == "__main__":
     root = TkinterDnD.Tk()

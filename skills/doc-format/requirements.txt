@@ -1,0 +1,4 @@
+python-docx
+tkinterdnd2
+pywin32; platform_system == "Windows"
+

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Shared configuration defaults for Word Formatter Pro v2.7.2."""
+"""Shared configuration defaults for Word Formatter Pro v2.7.3."""
 
 from wfp_core import DEFAULT_BLANK_LINE_MODE
 

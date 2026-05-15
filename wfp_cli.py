@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Command line entry point for Word Formatter Pro v2.7.2."""
+"""Command line entry point for Word Formatter Pro v2.7.3."""
 
 from __future__ import annotations
 

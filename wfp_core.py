@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Core document formatting engine for Word Formatter Pro v2.7.2.
+"""Core document formatting engine for Word Formatter Pro v2.7.3.
 
 This module is intentionally independent from Tkinter so GUI, CLI, and skills
-can reuse the same formatter implementation. It is mechanically extracted from
-2.7.2/wfp.py and should preserve v2.7.1 behavior unless changed explicitly.
+can reuse the same formatter implementation. This copy is maintained for the
+2.7.3 release.
 """
 
 import logging
@@ -67,7 +67,6 @@ RE_MD_BOLD_UNDERSCORE = re.compile(r'__(.*?)__')
 RE_MD_HEADER = re.compile(r'^\s*#+\s+(.*)')
 RE_MD_BLOCKQUOTE = re.compile(r'^\s*>\s?(.*)')
 RE_MD_HORIZONTAL_RULE = re.compile(r'^\s*[-*_]{3,}\s*$')
-RE_MD_ORDERED_LIST = re.compile(r'^(\s*)(\d+)\.(\s+.*)')
 RE_MD_UNORDERED_LIST_BLOCK = re.compile(r'^\s*[*+-]\s+')
 RE_MD_UNORDERED_LIST = re.compile(r'^\s*[*+-]\s')
 RE_MD_BULLET_WITH_CONTENT = re.compile(r'^(\s*[*+-]\s)(.*)')
@@ -501,7 +500,7 @@ class WordProcessor:
         3. Remove heading markers (#)
         4. Remove blockquote markers (>)
         5. Remove horizontal rules (---)
-        6. Fix auto-numbering (1. 1. 1.) to sequential (1. 2. 3.)
+        6. Preserve original ordered-list numbering from the source text
         """
         if not text:
             return ""
@@ -521,8 +520,6 @@ class WordProcessor:
 
         lines = text.split('\n')
         new_lines = []
-        list_counters = {}  # indent -> count
-        in_list_block = False
 
         for line in lines:
             cleaned_line = line
@@ -531,8 +528,6 @@ class WordProcessor:
             header_match = RE_MD_HEADER.match(cleaned_line)
             if header_match:
                 cleaned_line = header_match.group(1)
-                in_list_block = False
-                list_counters = {}
 
             # Remove blockquote markers: > Text -> Text
             blockquote_match = RE_MD_BLOCKQUOTE.match(cleaned_line)
@@ -543,27 +538,7 @@ class WordProcessor:
             if RE_MD_HORIZONTAL_RULE.match(cleaned_line):
                 cleaned_line = ""
 
-            # List processing (auto-numbering fix)
-            list_match = RE_MD_ORDERED_LIST.match(cleaned_line)
-            if list_match:
-                indent_str = list_match.group(1)
-                indent = len(indent_str.expandtabs(4))
-                content = list_match.group(3)
-
-                if indent not in list_counters:
-                    list_counters[indent] = 0
-
-                if not in_list_block and int(list_match.group(2)) == 1:
-                    list_counters[indent] = 0
-
-                list_counters[indent] += 1
-                cleaned_line = f"{indent_str}{list_counters[indent]}.{content}"
-                in_list_block = True
-            else:
-                if cleaned_line.strip() != '':
-                    if RE_MD_UNORDERED_LIST_BLOCK.match(cleaned_line):
-                        in_list_block = False
-                        list_counters = {}
+            # Ordered-list numbers are intentionally kept exactly as written.
 
             # Remove remaining * italic markers (careful not to break list markers)
             is_bullet = RE_MD_UNORDERED_LIST.match(cleaned_line)

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tkinter GUI for Word Formatter Pro v2.7.2."""
+"""Tkinter GUI for Word Formatter Pro v2.7.3."""
 
 import json
 import logging
@@ -28,7 +28,7 @@ from wfp_core import (
 class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
-        master.title("Word文档智能排版工具 v2.7.2")
+        master.title("Word文档智能排版工具 v2.7.3")
         master.geometry("1200x860")
         master.minsize(1200, 860)
         self.log_queue = queue.Queue()
@@ -748,7 +748,7 @@ class WordFormatterGUI:
         help_text_widget = scrolledtext.ScrolledText(help_win, wrap=tk.WORD, state='disabled')
         help_text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         help_content = """
-Word文档智能排版工具 v2.7.2 - 使用说明
+Word文档智能排版工具 v2.7.3 - 使用说明
 
 本工具旨在提供一键式的专业文档排版体验，支持批量处理和高度自定义。
 

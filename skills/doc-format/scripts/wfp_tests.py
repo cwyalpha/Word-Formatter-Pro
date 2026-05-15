@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Built-in unit tests for Word Formatter Pro v2.7.2."""
+"""Built-in unit tests for Word Formatter Pro v2.7.3."""
 
 from __future__ import annotations
 
@@ -45,6 +45,19 @@ class TextNormalizationTests(unittest.TestCase):
         raw = "# 标题\n**粗体** 和 [链接](https://example.com)\n![图片](a.png)\n> 引用"
         cleaned = WordProcessor._clean_markdown(raw)
         self.assertEqual(cleaned, "标题\n粗体 和 链接\n图片\n引用")
+
+    def test_markdown_cleaning_preserves_source_numeric_numbering(self):
+        raw = (
+            "一、登录\n\n"
+            "1. 打开软件\n"
+            "2. 完成登录\n\n"
+            "（一）首页搜索\n\n"
+            "1. 输入关键词\n"
+            "2. 点击院校\n"
+            "1.2.3 小节号保持原样"
+        )
+        cleaned = WordProcessor._clean_markdown(raw)
+        self.assertEqual(cleaned, raw)
 
 
 class BlankLineTests(unittest.TestCase):
@@ -150,7 +163,7 @@ class TempAndConversionTests(unittest.TestCase):
             processor._cleanup_temp_files()
 
     def test_txt_conversion_uses_blank_line_mode_and_cleans_temp_file(self):
-        with tempfile.TemporaryDirectory(prefix="wfp272_test_") as tmpdir:
+        with tempfile.TemporaryDirectory(prefix="wfp273_test_") as tmpdir:
             source = Path(tmpdir) / "sample.txt"
             source.write_text("标题\n\n正文一\n\n\n正文二", encoding="utf-8")
 

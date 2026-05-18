@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Compatibility entry point for Word Formatter Pro v2.7.3."""
+"""Compatibility entry point for Word Formatter Pro v2.7.4."""
 
 import sys
 

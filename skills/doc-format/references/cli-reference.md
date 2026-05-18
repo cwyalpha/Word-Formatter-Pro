@@ -141,7 +141,7 @@ python scripts/wfp_cli.py format -i input.docx -v
 ## 平台行为
 
 - Windows：`.doc/.wps` 转 `.docx` 优先使用 WPS/Word COM 和 pywin32；如果 COM 转换失败，会尝试 LibreOffice `soffice` 兜底。
-- macOS/Linux：可处理 `.docx/.txt/.md`；`.doc/.wps` 会尝试调用 LibreOffice `soffice` 转为 `.docx`，失败时提示安装 LibreOffice、用 `--soffice` 指定路径，或先手动另存为 `.docx`。
+- macOS/Linux/Kylin：可处理 `.docx/.txt/.md`；`.doc/.wps` 会尝试调用 LibreOffice `soffice` 转为 `.docx`。未安装 LibreOffice 时旧格式文件会记录为跳过，继续处理其他文件；如必须处理旧格式，可安装 LibreOffice、用 `--soffice` 指定路径，或先手动另存为 `.docx`。
 - 非 Windows 或 COM 不可用时，自动编号转文本会跳过。完成后需人工检查自动编号字体字号。
 
 ## 输出行为
@@ -150,4 +150,4 @@ python scripts/wfp_cli.py format -i input.docx -v
 - `-v/--verbose` 开启后，详细处理日志写入 stderr。
 - 单文件默认输出到同目录 `*_formatted.docx`。
 - 目录默认输出到 `<输入目录>_formatted/`，或用户指定的输出目录。
-- 退出码 `0` 表示全部成功，非 `0` 表示没有找到可处理文件或至少一个文件失败。
+- 退出码 `0` 表示没有失败；旧格式因缺少 LibreOffice 被跳过时会写入 stderr。非 `0` 表示没有找到可处理文件或至少一个文件失败。

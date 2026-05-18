@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Tkinter GUI for Word Formatter Pro v2.7.3."""
+"""Tkinter GUI for Word Formatter Pro v2.7.4."""
 
 import json
 import logging
@@ -10,14 +10,22 @@ import threading
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, scrolledtext, Menu, font as tkfont
-from tkinterdnd2 import DND_FILES, TkinterDnD
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    TKDND_AVAILABLE = True
+except Exception:
+    DND_FILES = None
+    TkinterDnD = None
+    TKDND_AVAILABLE = False
 
 from wfp_config import DEFAULT_CONFIG, FONT_SIZE_MAP, PRESET_FONT_OPTIONS
 from wfp_core import (
     BLANK_LINE_MODE_DELETE_SINGLE,
     BLANK_LINE_MODE_KEEP_SINGLE,
     BLANK_LINE_MODE_OPTIONS,
+    IS_WINDOWS,
     LARGE_FOLDER_FILE_CONFIRM_THRESHOLD,
+    LegacyConversionUnavailable,
     SUPPORTED_FILE_EXTENSIONS,
     WPSAppManager,
     WordProcessor,
@@ -28,7 +36,7 @@ from wfp_core import (
 class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
-        master.title("Word文档智能排版工具 v2.7.3")
+        master.title("Word文档智能排版工具 v2.7.4")
         master.geometry("1200x860")
         master.minsize(1200, 860)
         self.log_queue = queue.Queue()
@@ -217,9 +225,17 @@ class WordFormatterGUI:
         list_frame.rowconfigure(0, weight=1)
         list_frame.columnconfigure(0, weight=1)
         
-        self.file_listbox.drop_target_register(DND_FILES)
-        self.file_listbox.dnd_bind('<<Drop>>', self.handle_drop)
-        self.placeholder_label = ttk.Label(self.file_listbox, text="可以拖拽文件或文件夹到这里", foreground="grey")
+        if TKDND_AVAILABLE and hasattr(self.file_listbox, 'drop_target_register'):
+            try:
+                self.file_listbox.drop_target_register(DND_FILES)
+                self.file_listbox.dnd_bind('<<Drop>>', self.handle_drop)
+            except Exception as e:
+                self.log_to_debug_window(f"拖拽组件初始化失败，已改为按钮添加文件/文件夹：{e}")
+        else:
+            self.log_to_debug_window("拖拽添加不可用，已改为按钮添加文件/文件夹。")
+        dnd_enabled = TKDND_AVAILABLE and hasattr(self.file_listbox, 'drop_target_register')
+        placeholder_text = "可以拖拽文件或文件夹到这里" if dnd_enabled else "请使用下方按钮添加文件或文件夹"
+        self.placeholder_label = ttk.Label(self.file_listbox, text=placeholder_text, foreground="grey")
         
         file_button_frame = ttk.Frame(file_tab)
         file_button_frame.pack(fill=tk.X, pady=5)
@@ -748,7 +764,7 @@ class WordFormatterGUI:
         help_text_widget = scrolledtext.ScrolledText(help_win, wrap=tk.WORD, state='disabled')
         help_text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         help_content = """
-Word文档智能排版工具 v2.7.3 - 使用说明
+Word文档智能排版工具 v2.7.4 - 使用说明
 
 本工具旨在提供一键式的专业文档排版体验，支持批量处理和高度自定义。
 
@@ -787,7 +803,7 @@ Word文档智能排版工具 v2.7.3 - 使用说明
 - 参数自定义：所有核心参数均可在界面调整。配置方案可【保存】和【加载】。
 - Markdown 支持：.md 文件会自动清理 Markdown 标记（标题#、粗体**、链接[]()、图片![]()等）后转为纯文本进行排版。
 - 空行处理：TXT/MD 支持三种模式：不改动任何空行；删除单个空行且多个空行保留至1个空行；保留单个空行且多个空行保留至1个空行。默认使用“删除单个空行，多个空行保留至1个空行”。
-- 跨平台说明：非 Windows 或未安装 pywin32 时，可处理 .docx/.txt/.md；.doc/.wps 需先另存为 .docx，且自动编号转文本等 COM 预处理会跳过。
+- 跨平台说明：Windows 下优先使用 WPS/Word 处理 .doc/.wps 和自动编号转文本；Linux/Kylin 下不调用 WPS/Word，不执行自动编号转文本。.doc/.wps 会尝试使用 LibreOffice 转换，未安装 LibreOffice 时会跳过这些旧格式文件，.docx/.txt/.md 仍可正常处理。
 
 【安全提示】
 本工具【绝对不会】修改您的任何原始文件。所有操作都在后台的临时副本上进行，确保源文件100%安全。
@@ -802,11 +818,18 @@ Word文档智能排版工具 v2.7.3 - 使用说明
             return
 
         warning_title = "处理前重要提示"
-        warning_message = (
-            "为了防止数据丢失，请在继续前关闭所有已打开的Word和WPS文档（包括wps、表格、PPT等所有文档）。\n\n"
-            "本程序在转换文件格式时可能需要调用Word/WPS程序，这可能会影响未保存的工作。\n\n"
-            "您确定要继续吗？"
-        )
+        if IS_WINDOWS:
+            warning_message = (
+                "为了防止数据丢失，请在继续前关闭所有已打开的Word和WPS文档（包括wps、表格、PPT等所有文档）。\n\n"
+                "本程序在转换旧格式文件或预处理自动编号时可能需要调用Word/WPS程序，这可能会影响未保存的工作。\n\n"
+                "您确定要继续吗？"
+            )
+        else:
+            warning_message = (
+                "Linux/Kylin 下不会调用 WPS/Word，也不会执行自动编号转文本。\n\n"
+                "如处理 .doc/.wps，程序会尝试使用 LibreOffice；未安装 LibreOffice 时会跳过这些旧格式文件，继续处理 .docx/.txt/.md。\n\n"
+                "您确定要继续吗？"
+            )
         if not messagebox.askokcancel(warning_title, warning_message, parent=self.master):
             self.log_to_debug_window("用户已取消操作。")
             return
@@ -876,7 +899,7 @@ Word文档智能排版工具 v2.7.3 - 使用说明
         threading.Thread(target=worker, daemon=True).start()
 
     def _process_files(self, processor, file_list, output_dir):
-        success_count, fail_count = 0, 0
+        success_count, fail_count, skipped_count = 0, 0, 0
         total = len(file_list)
         for i, input_path in enumerate(file_list, start=1):
             base_name = os.path.basename(input_path)
@@ -888,6 +911,9 @@ Word文档智能排版工具 v2.7.3 - 使用说明
                 processor.format_document(input_path, output_path)
                 self.log_to_debug_window(f"✅ 文件处理成功，已保存至: {output_path}")
                 success_count += 1
+            except LegacyConversionUnavailable as e:
+                self.log_to_debug_window(f"\n已跳过旧格式文件 {base_name}：\n{e}")
+                skipped_count += 1
             except Exception as e:
                 logging.error(f"处理文件失败: {input_path}\n{e}", exc_info=True)
                 self.log_to_debug_window(f"\n❌ 处理文件 {base_name} 时发生严重错误：\n{e}")
@@ -895,10 +921,10 @@ Word文档智能排版工具 v2.7.3 - 使用说明
             finally:
                 processor._cleanup_temp_files()
 
-        summary_message = f"批量处理完成！\n\n成功: {success_count}个\n失败: {fail_count}个"
+        summary_message = f"批量处理完成！\n\n成功: {success_count}个\n跳过: {skipped_count}个\n失败: {fail_count}个"
         if fail_count > 0:
             summary_message += "\n\n失败详情请查看日志窗口。"
-        self._set_progress(100, f"完成（成功 {success_count} / 失败 {fail_count}）")
+        self._set_progress(100, f"完成（成功 {success_count} / 跳过 {skipped_count} / 失败 {fail_count}）")
         self.log_to_debug_window(f"\n🎉 {summary_message}")
 
         def show_summary(msg=summary_message):
@@ -953,9 +979,20 @@ Word文档智能排版工具 v2.7.3 - 使用说明
         self.master.destroy()
 
 
+def _create_root():
+    if TKDND_AVAILABLE:
+        try:
+            return TkinterDnD.Tk(), None
+        except Exception as e:
+            return tk.Tk(), f"拖拽组件启动失败，已回退为普通 Tk 窗口：{e}"
+    return tk.Tk(), None
+
+
 def main():
-    root = TkinterDnD.Tk()
+    root, dnd_error = _create_root()
     app = WordFormatterGUI(root)
+    if dnd_error:
+        app.log_to_debug_window(dnd_error)
     root.mainloop()
 
 

@@ -1,3 +1,4 @@
-pywin32
-python-docx
-tkinterdnd2
+python-docx>=1.1.0
+tkinterdnd2>=0.4.2
+pyinstaller>=6.0
+pywin32>=306; platform_system == "Windows"

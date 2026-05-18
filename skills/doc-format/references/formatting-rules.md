@@ -62,7 +62,7 @@
 ## 平台和自动编号
 
 - Windows 环境下，会尽量通过 WPS/Word COM 接受修订，并将自动编号转为普通文本。
-- `.doc/.wps` 转 `.docx` 在 Windows 优先使用 WPS/Word COM；macOS/Linux 或 COM 转换失败时，会尝试调用 LibreOffice `soffice`。
-- 如果 `soffice` 自动查找失败，可在 CLI 中使用 `--soffice <路径>` 指定；如果转换仍失败，应先手动另存为 `.docx` 后再处理。
+- `.doc/.wps` 转 `.docx` 在 Windows 优先使用 WPS/Word COM；macOS/Linux/Kylin 或 COM 转换失败时，会尝试调用 LibreOffice `soffice`。
+- 如果 `soffice` 自动查找失败，旧格式文件会记录为跳过并继续处理其他文件；如必须处理该文件，可在 CLI 中使用 `--soffice <路径>` 指定，或先手动另存为 `.docx` 后再处理。
 - 非 Windows 或 COM 不可用时，会跳过需要 WPS/Word 的预处理步骤。
 - 自动编号转换失败或被跳过时，输出文件中编号样式可能仍由 Word/WPS 自动编号控制，字体字号和缩进需要人工检查。

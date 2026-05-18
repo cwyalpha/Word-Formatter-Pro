@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Built-in unit tests for Word Formatter Pro v2.7.3."""
+"""Built-in unit tests for Word Formatter Pro v2.7.4."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from wfp_core import (
     BLANK_LINE_MODE_DELETE_SINGLE,
     BLANK_LINE_MODE_KEEP_SINGLE,
     BLANK_LINE_MODE_PRESERVE,
+    LegacyConversionUnavailable,
     WordProcessor,
 )
 
@@ -186,6 +187,15 @@ class TempAndConversionTests(unittest.TestCase):
             finally:
                 processor._cleanup_temp_files()
             self.assertFalse(os.path.exists(temp_docx))
+
+    def test_missing_soffice_marks_legacy_conversion_skipped(self):
+        class MissingConverter:
+            available = False
+
+        processor = WordProcessor(DEFAULT_CONFIG.copy())
+        processor.soffice_converter = MissingConverter()
+        with self.assertRaises(LegacyConversionUnavailable):
+            processor._convert_legacy_with_soffice("legacy.doc", "unused.docx")
 
 
 def main(argv=None):

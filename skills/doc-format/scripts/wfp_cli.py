@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Command line entry point for Word Formatter Pro v2.7.4."""
+"""Command line entry point for Word Formatter Pro."""
 
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from wfp_core import (
     _initialize_com_for_thread,
     _uninitialize_com_for_thread,
 )
+from wfp_version import __version__
 
 
 CONFIG_FILE_NAME = "wfp_config.json"
@@ -46,9 +47,9 @@ Arch Linux:
 安装后请确认 soffice 可用：
   soffice --version
 
-说明：CLI 会在 macOS/Linux 处理 .doc/.wps 时自动尝试调用 soffice 转换为 .docx。
+说明：CLI 会在 macOS/Kylin/Linux 处理 .doc/.wps 时自动尝试调用 soffice 转换为 .docx。
 如自动查找失败，可在 format 命令中使用 --soffice 指定 soffice 可执行文件路径。
-如果 Linux/Kylin 未安装 LibreOffice，.doc/.wps 会被记录为跳过；.docx/.txt/.md 仍可正常处理。
+如果 macOS/Kylin/Linux 未安装 LibreOffice，.doc/.wps 会被记录为跳过；.docx/.txt/.md 仍可正常处理。
 """
 
 CONFIG_DESCRIPTIONS = {
@@ -376,10 +377,11 @@ def show_config(args):
     config, source = load_config_with_overrides(args)
     payload = {
         "config_source": source,
+        "version": __version__,
         "config_file_auto_load": str((Path.cwd() / CONFIG_FILE_NAME).resolve()),
         "supported_inputs": sorted(SUPPORTED_EXTENSIONS),
         "output": "单文件输出 .docx；多文件或目录输出到目录，目录输入会递归保留原目录结构。",
-        "legacy_conversion": ".doc/.wps 在 Windows 优先使用 WPS/Word COM；macOS/Linux 或 COM 失败时尝试 LibreOffice soffice；Linux/Kylin 未安装 LibreOffice 时会跳过旧格式文件。",
+        "legacy_conversion": ".doc/.wps 在 Windows 优先使用 WPS/Word COM；macOS/Kylin/Linux 或 COM 失败时尝试 LibreOffice soffice；macOS/Kylin/Linux 未安装 LibreOffice 时会跳过旧格式文件。",
         "font_size_names": {str(key): value for key, value in FONT_SIZE_NAMES.items()},
         "blank_line_modes": BLANK_LINE_MODE_OPTIONS,
         "optional_features": [
@@ -442,6 +444,7 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description="Word Formatter Pro CLI：将 doc/docx/wps/txt/md 按公文排版规则格式化为 docx。"
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     fmt = subparsers.add_parser("format", help="格式化单文件、多文件或目录")

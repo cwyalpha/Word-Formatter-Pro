@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Core document formatting engine for Word Formatter Pro v2.7.4.
+"""Core document formatting engine for Word Formatter Pro.
 
 This module is intentionally independent from Tkinter so GUI, CLI, and skills
 can reuse the same formatter implementation. This copy is maintained for the
-2.7.4 release.
+2.7.5 release.
 """
 
 import logging
@@ -277,7 +277,7 @@ class WPSAppManager:
             )
         return (
             "当前环境无法使用 WPS/Word COM 自动化，已跳过接受修订和自动编号转文本。"
-            "在 Linux/Kylin 等系统上这是预期行为。"
+            "在 macOS/Kylin/Linux 等非 Windows 系统上这是预期行为。"
         )
 
     def get_app(self):
@@ -977,6 +977,28 @@ class WordProcessor:
                 return font_name, font_size
         return None, None
 
+    @staticmethod
+    def _get_paragraph_alignment(para):
+        try:
+            return para.alignment
+        except ValueError:
+            p_pr = para._p.pPr
+            jc = p_pr.jc if p_pr is not None else None
+            raw_value = jc.get(qn("w:val")) if jc is not None else None
+            return {
+                "start": WD_ALIGN_PARAGRAPH.LEFT,
+                "left": WD_ALIGN_PARAGRAPH.LEFT,
+                "end": WD_ALIGN_PARAGRAPH.RIGHT,
+                "right": WD_ALIGN_PARAGRAPH.RIGHT,
+                "center": WD_ALIGN_PARAGRAPH.CENTER,
+                "both": WD_ALIGN_PARAGRAPH.JUSTIFY,
+                "distribute": WD_ALIGN_PARAGRAPH.JUSTIFY,
+                "mediumKashida": WD_ALIGN_PARAGRAPH.JUSTIFY,
+                "highKashida": WD_ALIGN_PARAGRAPH.JUSTIFY,
+                "lowKashida": WD_ALIGN_PARAGRAPH.JUSTIFY,
+                "thaiDistribute": WD_ALIGN_PARAGRAPH.JUSTIFY,
+            }.get(raw_value)
+
     def _strip_leading_whitespace(self, para):
         if not para.runs:
             return
@@ -1387,7 +1409,7 @@ class WordProcessor:
                 if RE_TITLE_H1.match(text_to_check) or RE_TITLE_H2.match(text_to_check):
                     self._log("  > 发现一级/二级标题，在此之前未找到居中题目。")
                     return [], []
-                if para.alignment == WD_ALIGN_PARAGRAPH.CENTER:
+                if self._get_paragraph_alignment(para) == WD_ALIGN_PARAGRAPH.CENTER:
                     self._log(f"  > 在块 {idx + 1} 发现潜在题目首行。")
                     first_title_idx = idx
                     break
@@ -1418,7 +1440,7 @@ class WordProcessor:
                 break
             
             # 检查是否居中
-            if para.alignment != WD_ALIGN_PARAGRAPH.CENTER:
+            if self._get_paragraph_alignment(para) != WD_ALIGN_PARAGRAPH.CENTER:
                 break
             
             # 检查字体字号是否与首行相同
@@ -1456,7 +1478,7 @@ class WordProcessor:
                 text = para.text.strip()
                 
                 # 副标题必须居中
-                if text and para.alignment == WD_ALIGN_PARAGRAPH.CENTER:
+                if text and self._get_paragraph_alignment(para) == WD_ALIGN_PARAGRAPH.CENTER:
                     # 检查字体字号是否与标题不同
                     para_font, para_size = self._get_paragraph_font_info(para)
                     if para_font != title_font or para_size != title_size:
@@ -1481,7 +1503,7 @@ class WordProcessor:
                                 break
                             
                             # 检查是否居中
-                            if para.alignment != WD_ALIGN_PARAGRAPH.CENTER:
+                            if self._get_paragraph_alignment(para) != WD_ALIGN_PARAGRAPH.CENTER:
                                 break
                             
                             # 检查字体字号是否与副标题首行相同
@@ -1528,7 +1550,7 @@ class WordProcessor:
                         if not isinstance(potential_caption, Paragraph): break 
                         text = potential_caption.text.strip()
                         if text: 
-                            if potential_caption.alignment == WD_ALIGN_PARAGRAPH.CENTER and (text.startswith("图") or text.startswith("表")):
+                            if self._get_paragraph_alignment(potential_caption) == WD_ALIGN_PARAGRAPH.CENTER and (text.startswith("图") or text.startswith("表")):
                                 detected_type = "图" if text.startswith("图") else "表"
                                 self._log(f"  > 发现 {detected_type} 的标题: \"{text[:30]}...\" (在段落 {i+1})")
                                 config_font_key = f'{("figure" if detected_type == "图" else "table")}_caption_font'
@@ -1658,7 +1680,7 @@ class WordProcessor:
             is_attachment_candidate = False
             if is_from_txt:
                 if RE_ATTACHMENT.match(text_to_check_stripped): is_attachment_candidate = True
-            elif para.alignment in [WD_ALIGN_PARAGRAPH.LEFT, WD_ALIGN_PARAGRAPH.JUSTIFY, None] and RE_ATTACHMENT.match(text_to_check_stripped):
+            elif self._get_paragraph_alignment(para) in [WD_ALIGN_PARAGRAPH.LEFT, WD_ALIGN_PARAGRAPH.JUSTIFY, None] and RE_ATTACHMENT.match(text_to_check_stripped):
                 is_attachment_candidate = True
 
             if is_attachment_enabled and is_attachment_candidate:
@@ -1836,8 +1858,9 @@ class WordProcessor:
                 self._reset_pagination_properties(para)
                 
             elif not is_from_txt:
-                if para.alignment in [WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.RIGHT]:
-                    align_text = "居中" if para.alignment == WD_ALIGN_PARAGRAPH.CENTER else "右对齐"
+                para_alignment = self._get_paragraph_alignment(para)
+                if para_alignment in [WD_ALIGN_PARAGRAPH.CENTER, WD_ALIGN_PARAGRAPH.RIGHT]:
+                    align_text = "居中" if para_alignment == WD_ALIGN_PARAGRAPH.CENTER else "右对齐"
                     self._log(f"段落 {current_block_num}: {align_text}正文 - 保留原对齐")
                     self._apply_font_to_runs(para, self.config['body_font'], self.config['body_size'], set_color=apply_color)
                     self._reset_pagination_properties(para)

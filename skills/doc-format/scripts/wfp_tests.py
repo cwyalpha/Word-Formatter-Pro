@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""Built-in unit tests for Word Formatter Pro v2.7.4."""
+"""Built-in unit tests for Word Formatter Pro."""
 
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +18,7 @@ from wfp_core import (
     BLANK_LINE_MODE_KEEP_SINGLE,
     BLANK_LINE_MODE_PRESERVE,
     LegacyConversionUnavailable,
+    SofficeConverter,
     WordProcessor,
 )
 
@@ -196,6 +198,103 @@ class TempAndConversionTests(unittest.TestCase):
         processor.soffice_converter = MissingConverter()
         with self.assertRaises(LegacyConversionUnavailable):
             processor._convert_legacy_with_soffice("legacy.doc", "unused.docx")
+
+    def test_format_document_skips_wps_when_soffice_missing(self):
+        class MissingConverter:
+            available = False
+
+        with tempfile.TemporaryDirectory(prefix="wfp_legacy_skip_test_") as tmpdir:
+            source = Path(tmpdir) / "legacy.wps"
+            source.write_bytes(b"not a real wps file")
+
+            processor = WordProcessor(DEFAULT_CONFIG.copy())
+            processor.soffice_converter = MissingConverter()
+            with self.assertRaises(LegacyConversionUnavailable):
+                processor.format_document(str(source), str(Path(tmpdir) / "legacy_formatted.docx"))
+
+
+class LegacyFormatTests(unittest.TestCase):
+    def test_format_document_handles_doc_via_soffice_when_available(self):
+        converter = SofficeConverter()
+        if not converter.available:
+            self.skipTest("LibreOffice soffice is not available")
+
+        with tempfile.TemporaryDirectory(prefix="wfp_legacy_doc_test_") as tmpdir:
+            root = Path(tmpdir)
+            docx_source = root / "legacy_source.docx"
+            source_doc = Document()
+            source_doc.add_paragraph("旧格式标题")
+            source_doc.add_paragraph("第一段正文")
+            source_doc.save(docx_source)
+
+            legacy_dir = root / "legacy"
+            legacy_dir.mkdir()
+            profile = root / "lo_profile"
+            profile.mkdir()
+            proc = subprocess.run(
+                [
+                    converter.soffice_path,
+                    "--headless",
+                    f"-env:UserInstallation={profile.as_uri()}",
+                    "--convert-to",
+                    "doc",
+                    "--outdir",
+                    str(legacy_dir),
+                    str(docx_source),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=120,
+            )
+            generated = sorted(legacy_dir.glob("*.doc"))
+            if proc.returncode != 0 or not generated:
+                detail = (proc.stderr or proc.stdout or "LibreOffice did not generate a .doc file").strip()
+                self.skipTest(f"LibreOffice .doc export unavailable: {detail}")
+
+            output = root / "legacy_formatted.docx"
+            processor = WordProcessor(DEFAULT_CONFIG.copy(), soffice_path=converter.soffice_path)
+            try:
+                processor.format_document(str(generated[0]), str(output))
+                self.assertTrue(output.exists())
+                formatted = Document(output)
+                self.assertTrue(any(paragraph.text.strip() for paragraph in formatted.paragraphs))
+            finally:
+                processor._cleanup_temp_files()
+
+
+class EndToEndFormatTests(unittest.TestCase):
+    def test_format_document_handles_direct_formats(self):
+        with tempfile.TemporaryDirectory(prefix="wfp_format_test_") as tmpdir:
+            root = Path(tmpdir)
+            sources = []
+
+            txt_source = root / "sample.txt"
+            txt_source.write_text("测试标题\n\n第一段正文\n1. 小标题\n第二段正文", encoding="utf-8")
+            sources.append(txt_source)
+
+            md_source = root / "sample.md"
+            md_source.write_text("# Markdown标题\n\n**第一段**\n\n1. 步骤一", encoding="utf-8")
+            sources.append(md_source)
+
+            docx_source = root / "sample.docx"
+            source_doc = Document()
+            source_doc.add_paragraph("Word标题")
+            source_doc.add_paragraph("第一段正文")
+            source_doc.save(docx_source)
+            sources.append(docx_source)
+
+            for source in sources:
+                processor = WordProcessor(DEFAULT_CONFIG.copy())
+                output = root / f"{source.stem}_formatted.docx"
+                try:
+                    processor.format_document(str(source), str(output))
+                    self.assertTrue(output.exists(), f"missing output for {source.suffix}")
+                    formatted = Document(output)
+                    texts = [paragraph.text for paragraph in formatted.paragraphs]
+                    self.assertTrue(any(text.strip() for text in texts), f"empty output for {source.suffix}")
+                finally:
+                    processor._cleanup_temp_files()
 
 
 def main(argv=None):

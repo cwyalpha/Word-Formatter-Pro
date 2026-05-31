@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Tkinter GUI for Word Formatter Pro v2.7.4."""
+"""Tkinter GUI for Word Formatter Pro."""
 
 import json
 import logging
 import os
 import queue
+import sys
 import tempfile
 import threading
 
@@ -32,11 +33,12 @@ from wfp_core import (
     _initialize_com_for_thread,
     _uninitialize_com_for_thread,
 )
+from wfp_version import APP_TITLE, __version__
 
 class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
-        master.title("Word文档智能排版工具 v2.7.4")
+        master.title(f"{APP_TITLE} v{__version__}")
         master.geometry("1200x860")
         master.minsize(1200, 860)
         self.log_queue = queue.Queue()
@@ -763,8 +765,8 @@ class WordFormatterGUI:
         help_win = tk.Toplevel(self.master); help_win.title("使用说明"); help_win.geometry("600x600")
         help_text_widget = scrolledtext.ScrolledText(help_win, wrap=tk.WORD, state='disabled')
         help_text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-        help_content = """
-Word文档智能排版工具 v2.7.4 - 使用说明
+        help_content = f"""
+{APP_TITLE} v{__version__} - 使用说明
 
 本工具旨在提供一键式的专业文档排版体验，支持批量处理和高度自定义。
 
@@ -803,7 +805,7 @@ Word文档智能排版工具 v2.7.4 - 使用说明
 - 参数自定义：所有核心参数均可在界面调整。配置方案可【保存】和【加载】。
 - Markdown 支持：.md 文件会自动清理 Markdown 标记（标题#、粗体**、链接[]()、图片![]()等）后转为纯文本进行排版。
 - 空行处理：TXT/MD 支持三种模式：不改动任何空行；删除单个空行且多个空行保留至1个空行；保留单个空行且多个空行保留至1个空行。默认使用“删除单个空行，多个空行保留至1个空行”。
-- 跨平台说明：Windows 下优先使用 WPS/Word 处理 .doc/.wps 和自动编号转文本；Linux/Kylin 下不调用 WPS/Word，不执行自动编号转文本。.doc/.wps 会尝试使用 LibreOffice 转换，未安装 LibreOffice 时会跳过这些旧格式文件，.docx/.txt/.md 仍可正常处理。
+- 跨平台说明：Windows 下优先使用 WPS/Word 处理 .doc/.wps 和自动编号转文本；macOS/Kylin/Linux 下不调用 WPS/Word，不执行自动编号转文本。.doc/.wps 会尝试使用 LibreOffice 转换，未安装 LibreOffice 时会跳过这些旧格式文件，.docx/.txt/.md 仍可正常处理。
 
 【安全提示】
 本工具【绝对不会】修改您的任何原始文件。所有操作都在后台的临时副本上进行，确保源文件100%安全。
@@ -826,7 +828,7 @@ Word文档智能排版工具 v2.7.4 - 使用说明
             )
         else:
             warning_message = (
-                "Linux/Kylin 下不会调用 WPS/Word，也不会执行自动编号转文本。\n\n"
+                "macOS/Kylin/Linux 下不会调用 WPS/Word，也不会执行自动编号转文本。\n\n"
                 "如处理 .doc/.wps，程序会尝试使用 LibreOffice；未安装 LibreOffice 时会跳过这些旧格式文件，继续处理 .docx/.txt/.md。\n\n"
                 "您确定要继续吗？"
             )
@@ -980,10 +982,23 @@ Word文档智能排版工具 v2.7.4 - 使用说明
 
 
 def _create_root():
+    if sys.platform == "darwin":
+        return tk.Tk(), "macOS 下已禁用拖拽组件，请使用按钮添加文件/文件夹。"
     if TKDND_AVAILABLE:
+        previous_default_root = getattr(tk, "_default_root", None)
         try:
             return TkinterDnD.Tk(), None
         except Exception as e:
+            failed_root = getattr(tk, "_default_root", None)
+            if failed_root is not None and failed_root is not previous_default_root:
+                try:
+                    failed_root.destroy()
+                except Exception:
+                    pass
+                try:
+                    tk._default_root = previous_default_root
+                except Exception:
+                    pass
             return tk.Tk(), f"拖拽组件启动失败，已回退为普通 Tk 窗口：{e}"
     return tk.Tk(), None
 

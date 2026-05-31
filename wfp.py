@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Compatibility entry point for Word Formatter Pro v2.7.4."""
+"""Compatibility entry point for Word Formatter Pro."""
 
 import sys
+
+from wfp_version import __version__
 
 
 def main(argv=None):
@@ -10,6 +12,9 @@ def main(argv=None):
         from wfp_tests import main as test_main
 
         return test_main(argv[1:])
+    if argv and argv[0] in ("--version", "-V"):
+        print(__version__)
+        return 0
 
     from wfp_gui import main as gui_main
 

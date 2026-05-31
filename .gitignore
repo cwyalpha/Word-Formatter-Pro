@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local configs and build environments
+.venv/
+.venv-*/
+default_config.json
+wfp_config.json
+
+# PyInstaller and release output
+build/
+dist/
+*.spec
+release/

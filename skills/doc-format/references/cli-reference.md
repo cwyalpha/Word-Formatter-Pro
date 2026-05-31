@@ -141,7 +141,7 @@ python scripts/wfp_cli.py format -i input.docx -v
 ## 平台行为
 
 - Windows：`.doc/.wps` 转 `.docx` 优先使用 WPS/Word COM 和 pywin32；如果 COM 转换失败，会尝试 LibreOffice `soffice` 兜底。
-- macOS/Linux/Kylin：可处理 `.docx/.txt/.md`；`.doc/.wps` 会尝试调用 LibreOffice `soffice` 转为 `.docx`。未安装 LibreOffice 时旧格式文件会记录为跳过，继续处理其他文件；如必须处理旧格式，可安装 LibreOffice、用 `--soffice` 指定路径，或先手动另存为 `.docx`。
+- macOS/Kylin/Linux：可处理 `.docx/.txt/.md`；`.doc/.wps` 会尝试调用 LibreOffice `soffice` 转为 `.docx`。未安装 LibreOffice 时旧格式文件会记录为跳过，继续处理其他文件；如必须处理旧格式，可安装 LibreOffice、用 `--soffice` 指定路径，或先手动另存为 `.docx`。
 - 非 Windows 或 COM 不可用时，自动编号转文本会跳过。完成后需人工检查自动编号字体字号。
 
 ## 输出行为

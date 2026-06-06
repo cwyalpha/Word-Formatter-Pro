@@ -39,8 +39,11 @@ class WordFormatterGUI:
     def __init__(self, master):
         self.master = master
         master.title(f"{APP_TITLE} v{__version__}")
-        master.geometry("1200x860")
-        master.minsize(1200, 860)
+        self.left_pane_min_width = 360
+        self.right_pane_min_width = 520
+        self.preferred_left_ratio = 0.38
+        self.main_pane = None
+        self._configure_window_geometry()
         self.log_queue = queue.Queue()
         self.is_processing = False
 
@@ -78,6 +81,43 @@ class WordFormatterGUI:
         self.master.protocol("WM_DELETE_WINDOW", self._on_close)
         self.master.after(250, self.set_initial_pane_position)
         self.master.after(100, self._check_log_queue)
+
+    def _configure_window_geometry(self):
+        screen_width = max(self.master.winfo_screenwidth(), 1024)
+        screen_height = max(self.master.winfo_screenheight(), 720)
+        width = min(1200, max(900, screen_width - 80))
+        height = min(860, max(640, screen_height - 100))
+        min_width = min(1000, max(860, screen_width - 120))
+        min_height = min(720, max(600, screen_height - 160))
+        x = max(0, (screen_width - width) // 2)
+        y = max(0, (screen_height - height) // 2)
+        self.master.geometry(f"{width}x{height}+{x}+{y}")
+        self.master.minsize(min_width, min_height)
+
+    def _clamped_left_width(self, total_width, preferred=None):
+        total_width = max(int(total_width), 1)
+        min_left = self.left_pane_min_width
+        min_right = self.right_pane_min_width
+        if total_width < min_left + min_right:
+            min_left = max(280, int(total_width * 0.42))
+            min_right = max(320, total_width - min_left)
+        preferred = int(preferred if preferred is not None else total_width * self.preferred_left_ratio)
+        return max(min_left, min(preferred, max(min_left, total_width - min_right)))
+
+    def _ensure_pane_widths(self, event=None):
+        pane = self.main_pane
+        if pane is None:
+            return
+        try:
+            total_width = pane.winfo_width()
+            if total_width <= 100:
+                return
+            current_left = pane.sashpos(0)
+            desired_left = self._clamped_left_width(total_width, preferred=current_left)
+            if desired_left != current_left:
+                pane.sashpos(0, desired_left)
+        except tk.TclError:
+            pass
 
     def _get_installed_fonts(self):
         try:
@@ -169,22 +209,28 @@ class WordFormatterGUI:
                     pass
 
     def set_initial_pane_position(self):
-        # 获取窗口总宽度，设置左侧占约30%
-        total_width = self.master.winfo_width()
-        if total_width > 100:  # 确保窗口已经渲染
-            left_width = int(total_width * 0.3)  # 左侧占30%
-            # 找到PanedWindow并设置位置
-            for widget in self.master.winfo_children():
-                if isinstance(widget, ttk.PanedWindow):
-                    widget.sashpos(0, left_width)
-                    break
+        pane = self.main_pane
+        if pane is None:
+            return
+        try:
+            total_width = pane.winfo_width()
+            if total_width > 100:
+                left_width = self._clamped_left_width(total_width)
+                pane.sashpos(0, left_width)
+        except tk.TclError:
+            pass
 
     def create_menu(self):
         menubar = Menu(self.master)
         help_menu = Menu(menubar, tearoff=0)
         help_menu.add_command(label="使用说明", command=self.show_help_window)
+        help_menu.add_command(label="重置界面布局", command=self.reset_layout)
         menubar.add_cascade(label="帮助", menu=help_menu)
         self.master.config(menu=menubar)
+
+    def reset_layout(self):
+        self.set_initial_pane_position()
+        self.log_to_debug_window("已重置界面布局。")
 
     def _show_help_tooltip(self, title, message):
         messagebox.showinfo(title, message, parent=self.master)
@@ -197,8 +243,10 @@ class WordFormatterGUI:
     def create_widgets(self):
         main_pane = ttk.PanedWindow(self.master, orient=tk.HORIZONTAL)
         main_pane.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.main_pane = main_pane
+        main_pane.bind("<Configure>", self._ensure_pane_widths, add="+")
 
-        left_frame = ttk.Frame(main_pane, padding=5)
+        left_frame = ttk.Frame(main_pane, padding=5, width=420)
         main_pane.add(left_frame, weight=2)
 
         notebook = ttk.Notebook(left_frame)
@@ -284,10 +332,10 @@ class WordFormatterGUI:
         self.debug_text = scrolledtext.ScrolledText(log_frame, height=10, state='disabled', wrap=tk.WORD)
         self.debug_text.pack(fill=tk.BOTH, expand=True)
 
-        right_frame = ttk.Frame(main_pane, padding=5)
+        right_frame = ttk.Frame(main_pane, padding=5, width=680)
         main_pane.add(right_frame, weight=4)
         
-        canvas = tk.Canvas(right_frame)
+        canvas = tk.Canvas(right_frame, highlightthickness=0, width=660)
         v_scrollbar = ttk.Scrollbar(right_frame, orient=tk.VERTICAL, command=canvas.yview)
         canvas.configure(yscrollcommand=v_scrollbar.set)
         
@@ -303,7 +351,7 @@ class WordFormatterGUI:
         # Helper functions for creating widgets
         def create_entry(label, var_name, r, c):
             ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=3, pady=2)
-            entry = ttk.Entry(params_frame, width=12)
+            entry = ttk.Entry(params_frame, width=10)
             entry.grid(row=r, column=c+1, sticky=tk.EW, padx=3, pady=2)
             self.entries[var_name] = entry
             return entry
@@ -311,7 +359,7 @@ class WordFormatterGUI:
         def create_combo(label, var_name, opts, r, c, readonly=True): 
             ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=3, pady=2)
             state = 'readonly' if readonly else 'normal'
-            combo = ttk.Combobox(params_frame, values=opts, state=state, width=15)
+            combo = ttk.Combobox(params_frame, values=opts, state=state, width=13)
             combo.grid(row=r, column=c+1, sticky=tk.EW, padx=3, pady=2)
             if self.font_separator in opts:
                 combo._last_valid_value = ''
@@ -334,7 +382,7 @@ class WordFormatterGUI:
 
         def create_font_size_combo(label, var_name, r, c):
             ttk.Label(params_frame, text=label).grid(row=r, column=c, sticky=tk.W, padx=3, pady=2)
-            combo = ttk.Combobox(params_frame, values=list(self.font_size_map.keys()), width=15)
+            combo = ttk.Combobox(params_frame, values=list(self.font_size_map.keys()), width=13)
             combo.grid(row=r, column=c+1, sticky=tk.EW, padx=3, pady=2)
             self.entries[var_name] = combo
             return combo
@@ -461,7 +509,7 @@ class WordFormatterGUI:
         self._update_english_font_state()
         row += 1
         blank_line_combo = create_combo("TXT/MD空行处理", 'blank_line_mode', BLANK_LINE_MODE_OPTIONS, row, 0)
-        blank_line_combo.configure(width=42)
+        blank_line_combo.configure(width=34)
         blank_line_combo.grid_configure(columnspan=5)
         row += 1
 

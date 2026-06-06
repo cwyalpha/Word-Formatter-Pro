@@ -358,7 +358,7 @@ def main(argv: list[str] | None = None) -> int:
     kylin.add_argument("--no-appimage", action="store_true", help="Emit the PyInstaller Linux binary without wrapping AppImage.")
     kylin.set_defaults(func=build_kylin)
 
-    reused = subparsers.add_parser("reused-assets", help="Download v2.7.4 Windows/Kylin assets and rename them for v2.7.5.")
+    reused = subparsers.add_parser("reused-assets", help="Download reusable Windows/Kylin assets and rename them for the current version.")
     reused.add_argument("--overwrite", action="store_true", help="Overwrite existing files in release/.")
     reused.set_defaults(func=download_reused_assets)
 

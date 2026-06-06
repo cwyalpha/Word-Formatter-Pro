@@ -2,8 +2,8 @@
 """Core document formatting engine for Word Formatter Pro.
 
 This module is intentionally independent from Tkinter so GUI, CLI, and skills
-can reuse the same formatter implementation. This copy is maintained for the
-2.7.5 release.
+can reuse the same formatter implementation. This copy is maintained with the
+main release.
 """
 
 import logging

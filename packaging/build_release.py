@@ -54,6 +54,19 @@ def python_stdout(py: Path, code: str) -> str:
     return subprocess.check_output([str(py), "-c", code], text=True).strip()
 
 
+def module_file(py: Path, module: str) -> Path:
+    return Path(
+        python_stdout(
+            py,
+            (
+                "import importlib.util, pathlib; "
+                f"spec = importlib.util.find_spec({module!r}); "
+                "print(pathlib.Path(spec.origin).resolve())"
+            ),
+        )
+    )
+
+
 def host_key() -> str:
     system = platform.system().lower() or "unknown"
     machine = platform.machine().lower() or "unknown"
@@ -110,6 +123,8 @@ def pyinstaller_base(py: Path, target: str) -> list[str]:
         "tkinterdnd2",
         "--collect-data",
         "docx",
+        "--add-data",
+        f"{module_file(py, 'docx.parts')}{os.pathsep}docx/parts",
     ]
 
 

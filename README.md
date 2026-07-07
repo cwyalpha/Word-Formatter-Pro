@@ -361,4 +361,10 @@ A：不会。自动编号转文本依赖 WPS/Word COM，因此 macOS/Kylin/Linux
 
 ## Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)](https://www.star-history.com/#cwyalpha/Word-Formatter-Pro&type=date&legend=top-left)
+<a href="https://www.star-history.com/?repos=cwyalpha%2FWord-Formatter-Pro&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=cwyalpha/Word-Formatter-Pro&type=date&theme=dark&legend=top-left&sealed_token=gn65Nc67QWlWJxKbBGxjwVv9dEmnvkpismHIH9aLunIrha9mNHRszm0XxVld_tL5SAvNL-bTcl78Br5WTykGxEWYgxbKKOQm2zheOza8O_oBRpHo3ShIntiKJH4Jp7uQAQ93g0SW5BZkBK_91_hBvHm8LlRKI5XKatndgF76iNMWLh2N_tmpHW2x5C5J" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=cwyalpha/Word-Formatter-Pro&type=date&legend=top-left&sealed_token=gn65Nc67QWlWJxKbBGxjwVv9dEmnvkpismHIH9aLunIrha9mNHRszm0XxVld_tL5SAvNL-bTcl78Br5WTykGxEWYgxbKKOQm2zheOza8O_oBRpHo3ShIntiKJH4Jp7uQAQ93g0SW5BZkBK_91_hBvHm8LlRKI5XKatndgF76iNMWLh2N_tmpHW2x5C5J" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=cwyalpha/Word-Formatter-Pro&type=date&legend=top-left&sealed_token=gn65Nc67QWlWJxKbBGxjwVv9dEmnvkpismHIH9aLunIrha9mNHRszm0XxVld_tL5SAvNL-bTcl78Br5WTykGxEWYgxbKKOQm2zheOza8O_oBRpHo3ShIntiKJH4Jp7uQAQ93g0SW5BZkBK_91_hBvHm8LlRKI5XKatndgF76iNMWLh2N_tmpHW2x5C5J" />
+ </picture>
+</a>

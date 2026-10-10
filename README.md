@@ -30,7 +30,7 @@ Word-Formatter-Pro 是一款面向公文、报告和常规 Word 文档的桌面�
 *   **直接输入文本**：可在软件中直接粘贴文本并生成排版后的 Word 文档，直接文本默认使用 A4 纸张。
 *   **Markdown 清理**：处理 `.md` 文件时，会自动清理标题标记、粗体/斜体标记、链接、图片语法、引用、分隔线等 Markdown 标记；数字编号（如 `1.`、`1.2.3`）按源文档保留，不再自动递增重排。
 *   **空行整理**：TXT/MD 文件支持三种空行处理方式：不改动任何空行；删除单个空行并将连续多个空行合并为一个空行；保留单个空行并将连续多个空行合并为一个空行。默认使用“删除单个空行，多个空行保留至1个空行”。
-*   **修订和自动编号预处理**：仅 Windows 且可用 WPS/Word COM 时，会尝试接受修订并将自动编号转换为文本；macOS/Kylin/Linux 等非 Windows 环境固定跳过该步骤。
+*   **修订和自动编号预处理**：Windows 优先使用 WPS/Word COM 接受修订并转换编号，不可用或失败时回退到 Python 编号转换。macOS/Kylin/UOS/Linux 默认启用“识别自动编号并转换为文字”，包含表格，可在全局选项关闭。Python 转换不自动接受修订；不支持的编号保留并记录警告。
 *   **大文件夹拖入保护**：添加或拖入包含超过 1000 个文件的文件夹时，会先弹出确认提示，避免误拖深层目录导致长时间扫描。
 
 ### CLI、Skill 与可维护性
@@ -79,7 +79,7 @@ Word-Formatter-Pro 是一款面向公文、报告和常规 Word 文档的桌面�
     chmod +x Word-Formatter-Pro.v2.7.7.Kylin-V10.x86_64.AppImage
     ./Word-Formatter-Pro.v2.7.7.Kylin-V10.x86_64.AppImage
     ```
-3.  **可选依赖**：`.docx/.txt/.md` 可直接处理。Windows 下如需完整处理 `.doc/.wps`、修订和自动编号转文本，请确保已安装 **Microsoft Office** 或 **WPS Office**；macOS/Kylin/Linux 下不会调用 WPS/Word，也不会执行自动编号转文本。如需在 macOS/Kylin/Linux 下处理 `.wps/.doc` 旧格式，请安装 LibreOffice：
+3.  **可选依赖**：`.docx/.txt/.md` 可直接处理。Windows 下如需完整处理 `.doc/.wps`、修订和自动编号转文本，请确保已安装 **Microsoft Office** 或 **WPS Office**；macOS/Kylin/UOS/Linux 下通过 Python 默认转换自动编号，不调用 WPS/Word。如需在 macOS/Kylin/Linux 下处理 `.wps/.doc` 旧格式，请安装 LibreOffice：
     ```bash
     # macOS
     brew install --cask libreoffice
@@ -95,7 +95,7 @@ Word-Formatter-Pro 是一款面向公文、报告和常规 Word 文档的桌面�
 1.  **环境依赖**：
     *   已安装 Python 3.x（Kylin 上已验证目标为 Python 3.12 venv 环境）。
     *   Windows 下如需处理 `.doc/.wps` 或转换自动编号，需安装 **Microsoft Office** 或 **WPS Office**，并安装 pywin32。
-    *   macOS/Kylin/Linux 可处理 `.docx/.txt/.md`；如需处理 `.doc/.wps`，建议安装 LibreOffice 并确保 `soffice` 可用。未安装 LibreOffice 时旧格式文件会跳过，且不会执行 WPS/Word 自动编号转文本。
+    *   macOS/Kylin/Linux 可处理 `.docx/.txt/.md`；如需处理 `.doc/.wps`，建议安装 LibreOffice 并确保 `soffice` 可用。未安装 LibreOffice 时旧格式文件会跳过，自动编号转文字由 Python 执行。
 
 2.  **克隆仓库**：
     ```bash
@@ -222,7 +222,7 @@ npx skills add https://github.com/cwyalpha/Word-Formatter-Pro
 
 安装后，Agent 可按 Skill 说明调用 `scripts/wfp_cli.py`。Skill 的 `scripts` 目录包含完整 CLI、核心排版逻辑、默认配置和内置测试，不依赖上级项目目录。CLI 支持 JSON 配置：默认读取当前目录的 `wfp_config.json`，也可通过 `--config` 指定配置文件；可使用 `show-config` 查看当前配置，使用 `save-config` 保存修改后的配置。配置完成后，还可按需启用表格内容自动调整、自定义数字和字母字体（默认 Times New Roman）以及符号标准化，再重新执行一次格式化。
 
-跨平台转换说明：Windows 下处理 `.doc/.wps` 会优先尝试 WPS 或 Microsoft Word 接口，并尝试将自动编号转为可编辑文本；macOS/Kylin/Linux 下不会调用 WPS/Word，也不会执行自动编号转文本，`.doc/.wps` 仅在检测到 LibreOffice `soffice` 时转换为 `.docx`。如果未安装 LibreOffice，旧格式文件会跳过；如需处理，请安装 LibreOffice、通过 `--soffice` 指定路径，或先手动另存为 `.docx`。
+跨平台转换说明：Windows 下处理 `.doc/.wps` 会优先尝试 WPS 或 Microsoft Word 接口，并尝试将自动编号转为可编辑文本；macOS/Kylin/UOS/Linux 默认使用 Python 转换自动编号，不调用 WPS/Word，`.doc/.wps` 仅在检测到 LibreOffice `soffice` 时转换为 `.docx`。如果未安装 LibreOffice，旧格式文件会跳过；如需处理，请安装 LibreOffice、通过 `--soffice` 指定路径，或先手动另存为 `.docx`。
 
 ## 操作流程
 
@@ -267,9 +267,16 @@ A：不同文档的表格结构差异很大，自动调整可能改变原有表�
 
 **Q8：非 Windows 环境下自动编号转文本是否会执行？**
 
-A：不会。自动编号转文本依赖 WPS/Word COM，因此 macOS/Kylin/Linux 等非 Windows 环境固定跳过该步骤；即使安装 LibreOffice 用于转换 `.doc/.wps`，也不会把自动编号转换为普通文本。处理完成后请人工检查自动编号，尤其是无法单独选中的编号，其字体字号可能仍由编号样式控制。
+A：会。macOS/Kylin/UOS/Linux 的“识别自动编号并转换为文字”默认勾选，包含正文、表格及模块支持的其他文档区域；可在全局选项关闭，或在 CLI 使用 `--set convert_auto_numbering=false`。旧配置缺少该字段时默认开启。编号与原文直接连接，例如 `1.测试`，不新增编号后空白；原文自身空白不由编号预处理删除。预处理保留有效缩进，后续排版仍按当前排版配置执行。不支持的编号保留自动编号并记录警告，继续排版；修订不自动接受。DOC/WPS 需先通过现有 LibreOffice 流程转换为 DOCX。Windows 不显示此开关，优先使用 WPS/Word，不可用时自动回退到 Python；此非 Windows 配置项不控制 Windows 回退。
 
 ## 版本更新记录
+
+### v2.7.8
+
+* 非 Windows 新增默认开启的自动编号转文字，包含表格；支持配置保存及 CLI 开关。
+* Windows 优先使用 WPS/Office，不可用或预处理失败时在 Python 排版回退流程中转换编号。
+* 编号后不新增空白；不支持的编号保留并记录警告，继续排版。
+* 同步 Skill 的代码、配置、依赖及测试，保持 Skill 描述和说明文档不变。
 
 ### v2.7.7
 

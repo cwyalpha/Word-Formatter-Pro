@@ -10,6 +10,7 @@ FONT_SIZE_MAP = {
 }
 
 DEFAULT_CONFIG = {
+    'convert_auto_numbering': True,  # Non-Windows option; Windows uses COM or Python fallback.
     'page_number_align': '奇偶分页', 'footer_distance': 2.5, 'line_spacing': 28,
     'margin_top': 3.7, 'margin_bottom': 3.5, 'margin_left': 2.8, 'margin_right': 2.6,
     'title_font': '方正小标宋简体', 'h1_font': '黑体', 'h2_font': '楷体_GB2312',

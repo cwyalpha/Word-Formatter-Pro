@@ -53,6 +53,7 @@ Arch Linux:
 """
 
 CONFIG_DESCRIPTIONS = {
+    "convert_auto_numbering": ("识别自动编号并转换为文字", "true/false，非 Windows 默认开启；Windows 忽略此项"),
     "page_number_align": ("页码对齐", "奇偶分页 / 居中"),
     "footer_distance": ("页脚距离", "厘米"),
     "line_spacing": ("正文行距", "磅；line_spacing_unit=pt 时使用"),
@@ -400,6 +401,7 @@ def show_config(args):
         "font_size_names": {str(key): value for key, value in FONT_SIZE_NAMES.items()},
         "blank_line_modes": BLANK_LINE_MODE_OPTIONS,
         "optional_features": [
+            "convert_auto_numbering=true 非 Windows 识别自动编号并转换为文字（默认开启，含表格；不支持的编号保留并记录警告）",
             "enable_table_formatting=true 启用表格内容自动调整",
             "use_custom_english_font=true 并设置 english_font，可单独指定数字和字母字体，默认 Times New Roman",
             "normalize_punctuation=true 启用符号标准化",

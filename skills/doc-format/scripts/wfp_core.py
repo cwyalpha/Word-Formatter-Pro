@@ -276,8 +276,7 @@ class WPSAppManager:
                 "或先将文件另存为 .docx 后再处理。"
             )
         return (
-            "当前环境无法使用 WPS/Word COM 自动化，已跳过接受修订和自动编号转文本。"
-            "在 macOS/Kylin/Linux 等非 Windows 系统上这是预期行为。"
+            "当前环境无法使用 WPS/Word COM 自动化，无法执行 COM 预处理或自动接受修订。"
         )
 
     def get_app(self):
@@ -862,10 +861,40 @@ class WordProcessor:
         
         raise ValueError(f"不支持的文件格式: {file_ext}")
 
+    def _preprocess_document(self, docx_path, is_from_txt=False):
+        """Return a working copy with platform-appropriate numbering handling."""
+        if is_from_txt:
+            return docx_path
+        # Windows keeps COM first. If Office is absent or preprocessing fails,
+        # its existing Python formatting fallback now also converts numbering.
+        if IS_WINDOWS:
+            if self._preprocess_com_tasks(docx_path):
+                return docx_path
+            self._log("  > WPS/Word 预处理不可用，回退到 Python 自动编号转文字；修订不自动接受。")
+        elif not self.config.get('convert_auto_numbering', True):
+            self._log("  > 自动编号转文字已关闭，保留原自动编号。")
+            return docx_path
+
+        from wfp_numbering import convert_docx_numbering
+
+        self._log("正在对副本识别自动编号并转换为文字（包含表格）...")
+        output_path = self._make_temp_docx_path("numbering", Path(docx_path).stem)
+        report = convert_docx_numbering(
+            docx_path, output_path, strict=False, preserve_suffix=False,
+        )
+        if report.warnings:
+            self._log(f"  > 自动编号部分转换：已转换 {report.converted} 个段落；"
+                      "不支持的编号保留原状，继续排版。")
+            for warning in report.warnings:
+                self._log(f"  > 编号转换警告：{warning}")
+        else:
+            self._log(f"  > 自动编号转换完成，共转换 {report.converted} 个段落。")
+        return output_path
+
     def _preprocess_com_tasks(self, docx_path):
         if not self._com_available():
             self._log(f"  > {self._com_unavailable_message()}")
-            return
+            return False
         self._log("正在对副本执行预处理（接受所有修订、转换自动编号）...")
         doc_com = None
         try:
@@ -890,8 +919,10 @@ class WordProcessor:
             
             doc_com.Save()
             self._log("预处理完成。")
+            return True
         except Exception as e:
             self._log(f"警告：执行预处理任务时出错: {e}")
+            return False
         finally:
             if doc_com is not None:
                 try:
@@ -1588,7 +1619,7 @@ class WordProcessor:
 
     def format_document(self, input_path, output_path):
         processing_path, is_from_txt = self.convert_to_docx(input_path)
-        if not is_from_txt: self._preprocess_com_tasks(processing_path)
+        processing_path = self._preprocess_document(processing_path, is_from_txt)
         
         doc = Document(processing_path)
 

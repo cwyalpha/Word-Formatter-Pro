@@ -150,6 +150,7 @@ class WordFormatterGUI:
         self.force_a4_var = tk.BooleanVar(value=self.default_params['force_a4'])
         self.use_custom_english_font_var = tk.BooleanVar(value=self.default_params['use_custom_english_font'])
         self.normalize_punctuation_var = tk.BooleanVar(value=self.default_params['normalize_punctuation'])
+        self.convert_auto_numbering_var = tk.BooleanVar(value=self.default_params['convert_auto_numbering'])
         self.enable_table_var = tk.BooleanVar(value=self.default_params['enable_table_formatting'])
         self.table_auto_col_width_var = tk.BooleanVar(value=self.default_params['table_auto_col_width'])
         self.table_header_bold_var = tk.BooleanVar(value=self.default_params['table_header_bold'])
@@ -749,6 +750,12 @@ class WordFormatterGUI:
         self._update_attachment_state()
         row += 1
         row = create_section_header(advanced_frame, "全局选项", None, row)
+        if not IS_WINDOWS:
+            ttk.Checkbutton(
+                advanced_frame, text="识别自动编号并转换为文字",
+                variable=self.convert_auto_numbering_var,
+            ).grid(row=row, column=0, columnspan=4, sticky=tk.W, padx=3, pady=1)
+            row += 1
         ttk.Checkbutton(advanced_frame, text="自动设置大纲级别", variable=self.set_outline_var).grid(row=row, column=0, columnspan=2, sticky=tk.W, padx=3, pady=1)
         ttk.Checkbutton(advanced_frame, text="启用符号标准化", variable=self.normalize_punctuation_var).grid(row=row, column=2, columnspan=2, sticky=tk.W, padx=3, pady=1)
         row += 1
@@ -875,6 +882,7 @@ class WordFormatterGUI:
         self.force_a4_var.set(loaded_config.get('force_a4', False))
         self.use_custom_english_font_var.set(loaded_config.get('use_custom_english_font', False))
         self.normalize_punctuation_var.set(loaded_config.get('normalize_punctuation', False))
+        self.convert_auto_numbering_var.set(loaded_config.get('convert_auto_numbering', True))
         self.enable_table_var.set(loaded_config.get('enable_table_formatting', False))
         self.table_auto_col_width_var.set(loaded_config.get('table_auto_col_width', True))
         self.table_header_bold_var.set(loaded_config.get('table_header_bold', True))
@@ -884,6 +892,7 @@ class WordFormatterGUI:
         self.h1_bold_var.set(loaded_config.get('h1_bold', False))
         self.h2_bold_var.set(loaded_config.get('h2_bold', False))
         boolean_keys = [
+            'convert_auto_numbering',
             'set_outline', 'enable_attachment_formatting', 'force_a4',
             'use_custom_english_font', 'use_times_new_roman',
             'remove_blank_lines', 'normalize_punctuation',
@@ -933,6 +942,7 @@ class WordFormatterGUI:
         config['force_a4'] = self.force_a4_var.get()
         config['use_custom_english_font'] = self.use_custom_english_font_var.get()
         config['normalize_punctuation'] = self.normalize_punctuation_var.get()
+        config['convert_auto_numbering'] = self.convert_auto_numbering_var.get()
         config['enable_table_formatting'] = self.enable_table_var.get()
         config['table_auto_col_width'] = self.table_auto_col_width_var.get()
         config['table_header_bold'] = self.table_header_bold_var.get()
@@ -1092,7 +1102,7 @@ class WordFormatterGUI:
 - 参数自定义：所有核心参数均可在界面调整。配置方案可【保存】和【加载】。
 - Markdown 支持：.md 文件会自动清理 Markdown 标记（标题#、粗体**、链接[]()、图片![]()等）后转为纯文本进行排版。
 - 空行处理：TXT/MD 支持三种模式：不改动任何空行；删除单个空行且多个空行保留至1个空行；保留单个空行且多个空行保留至1个空行。默认使用“删除单个空行，多个空行保留至1个空行”。
-- 跨平台说明：Windows 下优先使用 WPS/Word 处理 .doc/.wps 和自动编号转文本；macOS/Kylin/Linux 下不调用 WPS/Word，不执行自动编号转文本。.doc/.wps 会尝试使用 LibreOffice 转换，未安装 LibreOffice 时会跳过这些旧格式文件，.docx/.txt/.md 仍可正常处理。
+- 跨平台说明：Windows 优先使用 WPS/Word 自动编号预处理，不可用或失败时回退到 Python 转换；macOS/Kylin/UOS/Linux 默认识别自动编号并转为文字（包含表格），可在全局选项关闭。Python 转换对不支持的编号保留并记录警告，不自动接受修订，也不新增编号后空白；随后按当前配置排版。非 Windows 或 Windows COM 不可用时，.doc/.wps 仍需 LibreOffice 转为 DOCX；未安装时跳过旧格式文件，.docx/.txt/.md 仍可处理。
 
 【安全提示】
 本工具【绝对不会】修改您的任何原始文件。所有操作都在后台的临时副本上进行，确保源文件100%安全。
@@ -1115,7 +1125,9 @@ class WordFormatterGUI:
             )
         else:
             warning_message = (
-                "macOS/Kylin/Linux 下不会调用 WPS/Word，也不会执行自动编号转文本。\n\n"
+                "macOS/Kylin/UOS/Linux 下不会调用 WPS/Word。\n"
+                + ("已启用自动编号转文字：包含表格，不支持的编号保留并记录警告。\n\n"
+                   if self.convert_auto_numbering_var.get() else "自动编号转文字已关闭，保留原自动编号。\n\n") +
                 "如处理 .doc/.wps，程序会尝试使用 LibreOffice；未安装 LibreOffice 时会跳过这些旧格式文件，继续处理 .docx/.txt/.md。\n\n"
                 "您确定要继续吗？"
             )

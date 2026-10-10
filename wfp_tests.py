@@ -7,6 +7,7 @@ import os
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from docx import Document
@@ -283,7 +284,7 @@ class TempAndConversionTests(unittest.TestCase):
 
             processor = WordProcessor(DEFAULT_CONFIG.copy())
             processor.soffice_converter = MissingConverter()
-            with self.assertRaises(LegacyConversionUnavailable):
+            with patch.object(processor, '_com_available', return_value=False), self.assertRaises(LegacyConversionUnavailable):
                 processor.format_document(str(source), str(Path(tmpdir) / "legacy_formatted.docx"))
 
 
@@ -373,6 +374,10 @@ class EndToEndFormatTests(unittest.TestCase):
 
 def main(argv=None):
     suite = unittest.defaultTestLoader.loadTestsFromModule(__import__(__name__))
+    import wfp_numbering_tests
+    import wfp_numbering_integration_tests
+    for module in (wfp_numbering_tests, wfp_numbering_integration_tests):
+        suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(module))
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)
     if result.wasSuccessful():

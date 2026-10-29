@@ -84,9 +84,10 @@ RE_HEADING_H1 = re.compile(r'^[一二三四五六七八九十百千万零]+\s*�
 RE_HEADING_H2 = re.compile(r'^[（\(][一二三四五六七八九十百千万零]+[）\)]')
 RE_HEADING_H3 = re.compile(r'^\d+\s*[\.．]')
 RE_HEADING_H4 = re.compile(r'^[（\(]\d+[）\)]')
-RE_ATTACHMENT = re.compile(r'^附件\s*(\d+|[一二三四五六七八九十百千万零]+)?\s*[:：]?$')
+RE_ATTACHMENT = re.compile(r'^附件\s*(\d+|[一二三四五六七八九十百千万零]+)[\s：:]*(.*)')
 RE_H2_INLINE_TITLE = re.compile(r'^[（\(](.+?)[）\)](.*)', re.DOTALL)
-
+RE_CHAPTER = re.compile(r'^第[一二三四五六七八九十百千万零\d]+章\s*')
+RE_ARTICLE = re.compile(r'^第[一二三四五六七八九十百千万零\d]+条\s*')
 
 class LegacyConversionUnavailable(RuntimeError):
     """Raised when an old Word/WPS file is intentionally skipped."""
@@ -678,28 +679,12 @@ class WordProcessor:
     # ------------------------------------------------------------------
     @staticmethod
     def _clean_markdown(text):
-        """
-        Clean Markdown content to plain text:
-        1. Remove images, links, HTML, inline code markers
-        2. Remove bold/italic markers (*, **, __)
-        3. Remove heading markers (#)
-        4. Remove blockquote markers (>)
-        5. Remove horizontal rules (---)
-        6. Preserve original ordered-list numbering from the source text
-        """
         if not text:
             return ""
-
-        # Global inline element replacements
-        # Remove images: ![alt](url) -> alt
         text = RE_MD_IMAGE.sub(r'\1', text)
-        # Remove links: [text](url) -> text
         text = RE_MD_LINK.sub(r'\1', text)
-        # Remove HTML tags
         text = RE_MD_HTML_TAG.sub('', text)
-        # Remove inline code: `code` -> code
         text = RE_MD_INLINE_CODE.sub(r'\1', text)
-        # Remove bold/italic (** or __)
         text = RE_MD_BOLD_ASTERISK.sub(r'\1', text)
         text = RE_MD_BOLD_UNDERSCORE.sub(r'\1', text)
 
@@ -708,24 +693,17 @@ class WordProcessor:
 
         for line in lines:
             cleaned_line = line
-
-            # Remove heading markers: # Title -> Title
             header_match = RE_MD_HEADER.match(cleaned_line)
             if header_match:
                 cleaned_line = header_match.group(1)
 
-            # Remove blockquote markers: > Text -> Text
             blockquote_match = RE_MD_BLOCKQUOTE.match(cleaned_line)
             if blockquote_match:
                 cleaned_line = blockquote_match.group(1)
 
-            # Remove horizontal rules: ---, ***, ___
             if RE_MD_HORIZONTAL_RULE.match(cleaned_line):
                 cleaned_line = ""
 
-            # Ordered-list numbers are intentionally kept exactly as written.
-
-            # Remove remaining * italic markers (careful not to break list markers)
             is_bullet = RE_MD_UNORDERED_LIST.match(cleaned_line)
 
             def remove_stars(m):
@@ -750,11 +728,6 @@ class WordProcessor:
     # ------------------------------------------------------------------
     @staticmethod
     def _remove_blank_lines_from_text(text, keep_single_blank_lines=False):
-        """
-        Normalize blank lines from txt/md text:
-        - 2+ consecutive blank lines: merge to 1
-        - Single blank line: delete by default, or keep when requested
-        """
         if not text:
             return text
 
@@ -797,7 +770,6 @@ class WordProcessor:
     # ------------------------------------------------------------------
     @staticmethod
     def _read_text_file(path):
-        """Try multiple encodings to read text file"""
         for enc in ['utf-8', 'utf-8-sig', 'gbk', 'gb18030']:
             try:
                 with open(path, 'r', encoding=enc) as f:
@@ -862,11 +834,8 @@ class WordProcessor:
         raise ValueError(f"不支持的文件格式: {file_ext}")
 
     def _preprocess_document(self, docx_path, is_from_txt=False):
-        """Return a working copy with platform-appropriate numbering handling."""
         if is_from_txt:
             return docx_path
-        # Windows keeps COM first. If Office is absent or preprocessing fails,
-        # its existing Python formatting fallback now also converts numbering.
         if IS_WINDOWS:
             if self._preprocess_com_tasks(docx_path):
                 return docx_path
@@ -945,8 +914,6 @@ class WordProcessor:
     def _apply_page_setup(self, doc, is_from_txt=False):
         self._log("正在应用页面边距和页码设置...")
         
-        # 判断是否需要强制设置A4纸
-        # 逻辑：如果是纯文本来源（包括直接输入）或者 用户勾选了强制A4，则设置为A4
         should_set_a4 = is_from_txt or self.config.get('force_a4', False)
 
         for section in doc.sections:
@@ -956,7 +923,6 @@ class WordProcessor:
             section.right_margin = Cm(self.config['margin_right'])
             section.footer_distance = Cm(self.config['footer_distance'])
 
-            # 设置纸张大小为A4 (仅在需要时)
             if should_set_a4:
                 section.page_width = Cm(21)
                 section.page_height = Cm(29.7)
@@ -985,7 +951,6 @@ class WordProcessor:
         for theme_attr in ('w:eastAsiaTheme', 'w:asciiTheme', 'w:hAnsiTheme', 'w:cstheme', 'w:csTheme'):
             rFonts.attrib.pop(qn(theme_attr), None)
         rFonts.set(qn('w:eastAsia'), font_name)
-        # 根据配置决定西文字体（数字、字母）
         en_font = self.config.get('english_font') if self.config.get('use_custom_english_font', False) else font_name
         en_font = en_font or font_name
         run.font.name = en_font
@@ -996,11 +961,8 @@ class WordProcessor:
         for run in para.runs: self._set_run_font(run, font_name, size_pt, set_color=set_color)
 
     def _get_paragraph_font_info(self, para):
-        """获取段落主要字体和字号信息"""
         if not para.runs:
             return None, None
-        
-        # 获取第一个非空run的字体信息
         for run in para.runs:
             if run.text.strip():
                 font_name = run.font.name
@@ -1059,10 +1021,6 @@ class WordProcessor:
         para.paragraph_format.keep_together = False
 
     def _get_outline_level(self, para):
-        """
-        读取段落的当前大纲级别
-        返回: 0-8 表示级别1-9，None 表示未设置
-        """
         pPr = para._p.get_or_add_pPr()
         outlineLvl = pPr.find(qn('w:outlineLvl'))
         if outlineLvl is not None:
@@ -1072,41 +1030,24 @@ class WordProcessor:
         return None
 
     def _set_outline_level(self, para, level):
-        """
-        直接设置段落的大纲级别，不通过样式，不影响字体字号等格式
-        level: 1-9 的整数，表示大纲级别
-        返回: 原有的大纲级别 (0-8) 或 None
-        """
         if level < 1 or level > 9:
             self._log(f"  > 警告：大纲级别 {level} 超出范围 (1-9)，已跳过设置")
             return None
-        
-        # 读取原有大纲级别
         original_level = self._get_outline_level(para)
-        
-        # 设置新的大纲级别 (Word内部用0-8表示1-9级)
         pPr = para._p.get_or_add_pPr()
         outlineLvl = pPr.find(qn('w:outlineLvl'))
         if outlineLvl is None:
             outlineLvl = OxmlElement('w:outlineLvl')
             pPr.append(outlineLvl)
         outlineLvl.set(qn('w:val'), str(level - 1))
-        
         return original_level
 
     def _format_heading(self, para, level):
-        """
-        为段落设置大纲级别（仅设置大纲级别，不影响其他格式）
-        """
         if not self.config['set_outline']:
             self._log(f"  > 大纲级别设置已禁用，跳过")
             return
-        
-        # 获取段落文本预览用于日志
         text_preview = para.text.strip()[:30].replace("\n", " ")
-        
         original_level = self._set_outline_level(para, level)
-        
         if original_level is not None:
             self._log(f"  > 大纲级别: Lv{original_level + 1} → Lv{level} (覆盖) - \"{text_preview}...\"")
         else:
@@ -1222,7 +1163,7 @@ class WordProcessor:
         set_side('right', right_cm)
 
     def _set_table_width_percent(self, table, percent=100):
-        percent = max(1, min(100, int(float(percent))))
+        percent = max(1, min(150, int(float(percent))))
         tbl_pr = self._get_or_add_table_pr(table)
         tbl_w = tbl_pr.find(qn('w:tblW'))
         if tbl_w is None:
@@ -1368,20 +1309,17 @@ class WordProcessor:
 
     @staticmethod
     def _apply_bold_to_runs(para, enabled):
-        if not enabled:
-            return
         for run in para.runs:
-            run.font.bold = True
+            run.font.bold = enabled
 
     @staticmethod
     def _apply_bold_to_first_chars(para, char_count, enabled):
-        if not enabled:
-            return
         consumed = 0
         for run in para.runs:
             run_len = len(run.text or '')
-            if run_len and consumed < char_count:
-                run.font.bold = True
+            if run_len:
+                if consumed < char_count:
+                    run.font.bold = enabled
             consumed += run_len
 
     def _format_tables(self, doc, apply_color=True):
@@ -1402,31 +1340,43 @@ class WordProcessor:
         width_percent = self._config_float(self.config, 'table_width_percent', 100)
         col_min_pct = self._config_float(self.config, 'table_col_min_pct', 8)
         col_max_pct = self._config_float(self.config, 'table_col_max_pct', 45)
-        short_text_len = self._config_float(self.config, 'table_short_text_len', 4)
         auto_col_width = self.config.get('table_auto_col_width', True)
         header_bold = self.config.get('table_header_bold', True)
-        smart_align = self.config.get('table_smart_align', False)
         unified_borders = self.config.get('table_unified_borders', True)
+        preserve_borders = self.config.get('table_preserve_borders', False)
 
         self._log(f"开始格式化表格内容（共 {len(tables)} 个）...")
         for table_idx, table in enumerate(tables, start=1):
             self._log(f"  > 表格 {table_idx}: 调整宽度、行高、字体和单元格格式")
             table.autofit = not auto_col_width
             self._set_table_width_percent(table, width_percent)
+            
+            tbl_pr = self._get_or_add_table_pr(table)
+            
+            # 强制移除浮动（环绕）属性
+            tblpPr = tbl_pr.find(qn('w:tblpPr'))
+            if tblpPr is not None:
+                tbl_pr.remove(tblpPr)
+            tbl_overlap = tbl_pr.find(qn('w:tblOverlap'))
+            if tbl_overlap is None:
+                tbl_overlap = OxmlElement('w:tblOverlap')
+                tbl_pr.append(tbl_overlap)
+            tbl_overlap.set(qn('w:val'), 'never')
+
             self._set_table_indent(table, 0)
+            jc = tbl_pr.find(qn('w:jc'))
+            if jc is None:
+                jc = OxmlElement('w:jc')
+                tbl_pr.append(jc)
+            jc.set(qn('w:val'), 'center')
+
             self._set_table_cell_margins(table)
-            if unified_borders:
+            
+            if unified_borders and not preserve_borders:
                 self._set_table_borders(table, size_pt=border_size_pt)
+                
             if auto_col_width:
                 self._set_table_col_widths_by_content(table, min_pct=col_min_pct, max_pct=col_max_pct)
-
-            serial_col_idx = None
-            if table.rows:
-                for col_idx, cell in enumerate(table.rows[0].cells):
-                    head_text = ''.join(p.text for p in cell.paragraphs).strip()
-                    if '序号' in head_text or head_text == '序':
-                        serial_col_idx = col_idx
-                        break
 
             for row_idx, row in enumerate(table.rows):
                 if row_height_cm > 0:
@@ -1434,10 +1384,9 @@ class WordProcessor:
                     row.height_rule = WD_ROW_HEIGHT_RULE.AT_LEAST
 
                 for col_idx, cell in enumerate(row.cells):
-                    if unified_borders:
+                    if unified_borders and not preserve_borders:
                         self._set_cell_borders(cell, size_pt=border_size_pt)
 
-                    cell_text = ''.join(p.text for p in cell.paragraphs).strip()
                     for para in cell.paragraphs:
                         if para.text.strip():
                             for run in para.runs:
@@ -1456,31 +1405,244 @@ class WordProcessor:
                             'table_line_spacing_multiple',
                             22,
                         )
+                        
+                        para.alignment = WD_ALIGN_PARAGRAPH.CENTER
 
-                        if smart_align:
-                            if row_idx == 0:
-                                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                            elif '合计' in cell_text or '总计' in cell_text:
-                                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                            elif serial_col_idx is not None and col_idx == serial_col_idx:
-                                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                            elif self._is_numeric_table_text(cell_text):
-                                para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                            elif self._is_short_table_text(cell_text, short_text_len):
-                                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                            else:
-                                para.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    
-    def _find_title_and_subtitle_paragraphs(self, doc, is_from_txt, start_index=0):
-        """
-        查找题目和副标题段落的索引范围
-        返回: (title_indices, subtitle_indices)
-        title_indices: 题目行的索引列表
-        subtitle_indices: 副标题行的索引列表
-        """
-        all_blocks = list(self._iter_block_items(doc))
+    def _format_signature(self, doc):
+        import re
+        from docx.shared import Pt
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+
+        all_paras = list(doc.paragraphs)
+        if len(all_paras) < 2:
+            return
+            
+        date_pattern = re.compile(r'^\d{4}年\d{1,2}月\d{1,2}日$')
+
+        date_idx = -1
+        for i in range(len(all_paras) - 1, -1, -1):
+            if date_pattern.match(all_paras[i].text.strip()):
+                date_idx = i
+                break
+                
+        if date_idx == -1:
+            return
+
+        unit_idx = -1
+        for i in range(date_idx - 1, -1, -1):
+            text = all_paras[i].text.strip()
+            if not text:
+                continue
+            if date_pattern.match(text):
+                continue
+            if len(text) < 40 and not text.endswith('。') and not text.endswith('；'):
+                unit_idx = i
+                break
+            else:
+                break
+                
+        if unit_idx == -1:
+            return
+
+        self._log(f"  > 发现落款：{all_paras[unit_idx].text.strip()} / {all_paras[date_idx].text.strip()}")
         
-        # 查找首个标题行
+        p_unit = all_paras[unit_idx]
+        p_date = all_paras[date_idx]
+        body_line_spacing_pt = float(self.config.get('line_spacing', 28))
+
+        to_remove = []
+        for i in range(unit_idx - 1, -1, -1):
+            if not all_paras[i].text.strip():
+                to_remove.append(all_paras[i])
+            else:
+                break
+        
+        for p in to_remove:
+            p._p.getparent().remove(p._p)
+        if to_remove:
+            self._log(f"  > 落款区域：清除原文 {len(to_remove)} 个自带空段落")
+
+        sig_pt = float(self.config.get('signature_space_pt', 0.0))
+        sig_lines = float(self.config.get('signature_space_lines', 0))
+        
+        if sig_pt > 0:
+            final_before_pt = sig_pt
+        else:
+            final_before_pt = sig_lines * body_line_spacing_pt
+        self._log(f"  > 落款段前：计算得 {final_before_pt} pt (优先磅值{ sig_pt } / 行数{ sig_lines })")
+
+        body_size = self.config.get('body_size', 16)
+        p_unit.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        p_unit.paragraph_format.first_line_indent = None
+        p_unit.paragraph_format.right_indent = Pt(body_size * 2)
+        p_unit.paragraph_format.space_before = Pt(final_before_pt)
+        p_unit.paragraph_format.space_after = Pt(0)
+        p_unit.paragraph_format.line_spacing = Pt(body_line_spacing_pt)
+
+        p_date.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        p_date.paragraph_format.first_line_indent = None
+        p_date.paragraph_format.right_indent = Pt(body_size * 4)
+        p_date.paragraph_format.space_before = Pt(0)
+        p_date.paragraph_format.space_after = Pt(0)
+        p_date.paragraph_format.line_spacing = Pt(body_line_spacing_pt)
+
+    def _ensure_blank_line_after_title(self, doc, title_paras):
+        if not title_paras:
+            return
+            
+        title_paras = [p for p in title_paras if p._p.getparent() is not None]
+        if not title_paras:
+            return
+            
+        first_title_p = title_paras[0]._p
+        last_title_p = title_paras[-1]._p
+        
+        prev_sib = first_title_p.getprevious()
+        while prev_sib is not None and prev_sib.tag == qn('w:p'):
+            text = "".join(prev_sib.itertext()).strip()
+            has_drawing = prev_sib.find('.//' + qn('w:drawing')) is not None
+            has_pict = prev_sib.find('.//' + qn('w:pict')) is not None
+            if not text and not has_drawing and not has_pict:
+                to_remove = prev_sib
+                prev_sib = prev_sib.getprevious()
+                to_remove.getparent().remove(to_remove)
+            else:
+                break
+                
+        next_sib = last_title_p.getnext()
+        while next_sib is not None and next_sib.tag == qn('w:p'):
+            text = "".join(next_sib.itertext()).strip()
+            has_drawing = next_sib.find('.//' + qn('w:drawing')) is not None
+            has_pict = next_sib.find('.//' + qn('w:pict')) is not None
+            if not text and not has_drawing and not has_pict:
+                to_remove = next_sib
+                next_sib = next_sib.getnext()
+                to_remove.getparent().remove(to_remove)
+            else:
+                break
+                
+        new_p = OxmlElement("w:p")
+        last_title_p.addnext(new_p)
+        
+        new_para = Paragraph(new_p, title_paras[-1]._parent)
+        
+        body_font = self.config.get('body_font', '仿宋_GB2312')
+        body_size = self.config.get('body_size', 16)
+        line_spacing_pt = float(self.config.get('line_spacing', 28))
+        
+        new_para.paragraph_format.line_spacing = Pt(line_spacing_pt)
+        new_para.paragraph_format.space_before = Pt(0)
+        new_para.paragraph_format.space_after = Pt(0)
+        new_para.paragraph_format.first_line_indent = None
+        
+        run = new_para.add_run("　")
+        self._set_run_font(run, body_font, body_size, set_color=False)
+        
+        self._log("  > 已在主标题下方强制插入一个空行。")
+
+    def _ensure_blank_line_after_attachment_title(self, doc):
+        self._log("  > 正在检查附件标题下方的空行...")
+        all_paras = list(doc.paragraphs)
+        
+        attachment_indices = []
+        for i, p in enumerate(all_paras):
+            if RE_ATTACHMENT.match(p.text.strip()):
+                attachment_indices.append(i)
+
+        for idx in attachment_indices:
+            title_idx = -1
+            for j in range(idx + 1, len(all_paras)):
+                if all_paras[j].text.strip():
+                    title_idx = j
+                    break
+            
+            if title_idx != -1:
+                title_p = all_paras[title_idx]
+                
+                prev_sib = title_p._p.getprevious()
+                while prev_sib is not None and prev_sib.tag == qn('w:p'):
+                    text = "".join(prev_sib.itertext()).strip()
+                    if not text:
+                        to_remove = prev_sib
+                        prev_sib = prev_sib.getprevious()
+                        to_remove.getparent().remove(to_remove)
+                    else:
+                        break
+                
+                next_sib = title_p._p.getnext()
+                while next_sib is not None and next_sib.tag == qn('w:p'):
+                    text = "".join(next_sib.itertext()).strip()
+                    has_drawing = next_sib.find('.//' + qn('w:drawing')) is not None
+                    has_pict = next_sib.find('.//' + qn('w:pict')) is not None
+                    if not text and not has_drawing and not has_pict:
+                        to_remove = next_sib
+                        next_sib = next_sib.getnext()
+                        to_remove.getparent().remove(to_remove)
+                    else:
+                        break
+                
+                new_p = OxmlElement("w:p")
+                title_p._p.addnext(new_p)
+                
+                new_para = Paragraph(new_p, title_p._parent)
+                
+                body_font = self.config.get('body_font', '仿宋_GB2312')
+                body_size = self.config.get('body_size', 16)
+                line_spacing_pt = float(self.config.get('line_spacing', 28))
+                
+                new_para.paragraph_format.line_spacing = Pt(line_spacing_pt)
+                new_para.paragraph_format.space_before = Pt(0)
+                new_para.paragraph_format.space_after = Pt(0)
+                new_para.paragraph_format.first_line_indent = None
+                
+                run = new_para.add_run("　")
+                self._set_run_font(run, body_font, body_size, set_color=False)
+
+    def _clean_blank_pages(self, doc):
+        self._log("正在检查并清理可能导致空白页的段落...")
+        body = doc.element.body
+        p_tag = qn('w:p')
+        
+        for p in reversed(body.findall(p_tag)):
+            text = "".join(p.itertext()).strip()
+            has_drawing = p.find('.//' + qn('w:drawing')) is not None
+            has_pict = p.find('.//' + qn('w:pict')) is not None
+            if not text and not has_drawing and not has_pict:
+                body.remove(p)
+            else:
+                brs = p.findall('.//' + qn('w:br'))
+                for br in brs:
+                    if br.get(qn('w:type')) == 'page':
+                        br.getparent().remove(br)
+                break
+                
+        for p in body.findall(p_tag):
+            ppr = p.find(qn('w:pPr'))
+            if ppr is not None and ppr.find(qn('w:pageBreakBefore')) is not None:
+                prev_sib = p.getprevious()
+                while prev_sib is not None and prev_sib.tag == p_tag:
+                    text = "".join(prev_sib.itertext()).strip()
+                    has_drawing = prev_sib.find('.//' + qn('w:drawing')) is not None
+                    has_pict = prev_sib.find('.//' + qn('w:pict')) is not None
+                    if not text and not has_drawing and not has_pict:
+                        to_remove = prev_sib
+                        prev_sib = prev_sib.getprevious()
+                        body.remove(to_remove)
+                    else:
+                        break
+                        
+        for p in list(body.findall(p_tag)):
+            text = "".join(p.itertext()).strip()
+            has_drawing = p.find('.//' + qn('w:drawing')) is not None
+            has_pict = p.find('.//' + qn('w:pict')) is not None
+            if not text and not has_drawing and not has_pict:
+                brs = p.findall('.//' + qn('w:br'))
+                has_page_break = any(br.get(qn('w:type')) == 'page' for br in brs)
+                if has_page_break:
+                    body.remove(p)
+
+    def _find_title_and_subtitle_paragraphs(self, doc, is_from_txt, start_index=0):
+        all_blocks = list(self._iter_block_items(doc))
         first_title_idx = -1
         
         if is_from_txt:
@@ -1489,7 +1651,7 @@ class WordProcessor:
                 block = all_blocks[idx]
                 if isinstance(block, Paragraph) and block.text.strip():
                     text_to_check = block.text.strip()
-                    if RE_TITLE_H1.match(text_to_check) or RE_TITLE_H2.match(text_to_check):
+                    if RE_TITLE_H1.match(text_to_check) or RE_TITLE_H2.match(text_to_check) or RE_CHAPTER.match(text_to_check):
                         self._log(f"  > 首个非空行 (块 {idx + 1}) 符合标题格式，认定本文档无独立题目。")
                         return [], []
                     else:
@@ -1504,7 +1666,7 @@ class WordProcessor:
                     continue
                 para = block
                 text_to_check = para.text.lstrip()
-                if RE_TITLE_H1.match(text_to_check) or RE_TITLE_H2.match(text_to_check):
+                if RE_TITLE_H1.match(text_to_check) or RE_TITLE_H2.match(text_to_check) or RE_CHAPTER.match(text_to_check):
                     self._log("  > 发现一级/二级标题，在此之前未找到居中题目。")
                     return [], []
                 if self._get_paragraph_alignment(para) == WD_ALIGN_PARAGRAPH.CENTER:
@@ -1516,11 +1678,9 @@ class WordProcessor:
             self._log("  > 扫描结束，未能找到题目。")
             return [], []
         
-        # 获取首个标题行的字体字号信息
         first_title_para = all_blocks[first_title_idx]
         title_font, title_size = self._get_paragraph_font_info(first_title_para)
         
-        # 向下查找连续的标题行
         title_indices = [first_title_idx]
         idx = first_title_idx + 1
         
@@ -1532,32 +1692,26 @@ class WordProcessor:
             para = block
             text = para.text.strip()
             
-            # 遇到空行，停止标题识别
             if not text:
                 self._log(f"  > 在块 {idx + 1} 遇到空行，标题识别结束。")
                 break
             
-            # 检查是否居中
             if self._get_paragraph_alignment(para) != WD_ALIGN_PARAGRAPH.CENTER:
                 break
             
-            # 检查字体字号是否与首行相同
             para_font, para_size = self._get_paragraph_font_info(para)
             if para_font == title_font and para_size == title_size:
                 self._log(f"  > 块 {idx + 1} 也是标题行（居中且字体字号相同）。")
                 title_indices.append(idx)
                 idx += 1
             else:
-                # 字体字号不同，可能是副标题的开始
                 break
         
         self._log(f"  > 共识别到 {len(title_indices)} 行标题。")
         
-        # 查找副标题
         subtitle_indices = []
         subtitle_start_idx = idx
         
-        # 跳过空行
         while subtitle_start_idx < len(all_blocks):
             block = all_blocks[subtitle_start_idx]
             if isinstance(block, Paragraph) and block.text.strip():
@@ -1565,25 +1719,20 @@ class WordProcessor:
             if isinstance(block, Paragraph):
                 subtitle_start_idx += 1
             else:
-                # 遇到非段落（如表格），停止
                 break
         
-        # 检查是否有副标题
         if subtitle_start_idx < len(all_blocks):
             block = all_blocks[subtitle_start_idx]
             if isinstance(block, Paragraph):
                 para = block
                 text = para.text.strip()
                 
-                # 副标题必须居中
                 if text and self._get_paragraph_alignment(para) == WD_ALIGN_PARAGRAPH.CENTER:
-                    # 检查字体字号是否与标题不同
                     para_font, para_size = self._get_paragraph_font_info(para)
                     if para_font != title_font or para_size != title_size:
                         self._log(f"  > 在块 {subtitle_start_idx + 1} 发现副标题首行（居中且字体字号与标题不同）。")
                         subtitle_indices.append(subtitle_start_idx)
                         
-                        # 查找连续的副标题行
                         subtitle_font, subtitle_size = para_font, para_size
                         idx = subtitle_start_idx + 1
                         
@@ -1595,16 +1744,13 @@ class WordProcessor:
                             para = block
                             text = para.text.strip()
                             
-                            # 遇到空行，停止副标题识别
                             if not text:
                                 self._log(f"  > 在块 {idx + 1} 遇到空行，副标题识别结束。")
                                 break
                             
-                            # 检查是否居中
                             if self._get_paragraph_alignment(para) != WD_ALIGN_PARAGRAPH.CENTER:
                                 break
                             
-                            # 检查字体字号是否与副标题首行相同
                             para_font, para_size = self._get_paragraph_font_info(para)
                             if para_font == subtitle_font and para_size == subtitle_size:
                                 self._log(f"  > 块 {idx + 1} 也是副标题行（居中且字体字号相同）。")
@@ -1661,10 +1807,8 @@ class WordProcessor:
                             break 
                     if caption_found: break 
 
-        # 查找主标题和副标题
         title_indices, subtitle_indices = self._find_title_and_subtitle_paragraphs(doc, is_from_txt)
         
-        # 将标题和副标题索引加入已处理集合
         for idx in title_indices:
             processed_indices.add(idx)
         for idx in subtitle_indices:
@@ -1676,7 +1820,6 @@ class WordProcessor:
         else:
             self._log("【大纲级别设置已禁用】")
             
-        # 格式化主标题
         if title_indices:
             self._log(f"\n开始格式化主标题（共 {len(title_indices)} 行）...")
             for idx in title_indices:
@@ -1688,7 +1831,6 @@ class WordProcessor:
                 para.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 para.paragraph_format.first_line_indent = None
                 
-                # 设置标题行间距
                 spacing = para._p.get_or_add_pPr().get_or_add_spacing()
                 spacing.set(qn('w:beforeAutospacing'), '0')
                 spacing.set(qn('w:afterAutospacing'), '0')
@@ -1704,7 +1846,6 @@ class WordProcessor:
                 
                 self._reset_pagination_properties(para)
         
-        # 格式化副标题
         if subtitle_indices:
             self._log(f"\n开始格式化副标题（共 {len(subtitle_indices)} 行）...")
             for idx in subtitle_indices:
@@ -1715,7 +1856,6 @@ class WordProcessor:
                 para.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 para.paragraph_format.first_line_indent = None
                 
-                # 设置副标题行间距
                 spacing = para._p.get_or_add_pPr().get_or_add_spacing()
                 spacing.set(qn('w:beforeAutospacing'), '0')
                 spacing.set(qn('w:afterAutospacing'), '0')
@@ -1805,97 +1945,110 @@ class WordProcessor:
             if is_attachment_enabled and is_attachment_candidate:
                 self._log(f"段落 {current_block_num}: 附件标识 - \"{para_text_preview}...\"")
                 self._strip_leading_whitespace(para)
-                self._apply_font_to_runs(para, self.config['attachment_font'], self.config['attachment_size'], set_color=apply_color)
-                self._reset_pagination_properties(para)
-                para.paragraph_format.page_break_before = True
-                para.paragraph_format.left_indent = Pt(0)
-                para.paragraph_format.first_line_indent = None
                 
-                ind = para._p.get_or_add_pPr().get_or_add_ind()
-                ind.set(qn("w:firstLineChars"), "0")
+                match = RE_ATTACHMENT.match(para.text.strip())
+                if match:
+                    att_num = match.group(1)
+                    prefix = f"附件{att_num}：" if att_num else "附件："
+                    title_text = match.group(2).strip()
+                else:
+                    prefix = "附件："
+                    title_text = ""
+
+                para.clear()
+                run = para.add_run(prefix)
+                self._set_run_font(run, self.config['attachment_font'], self.config['attachment_size'], set_color=apply_color)
+                run.font.bold = bool(self.config.get('attachment_bold', False))
                 
                 para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+                para.paragraph_format.first_line_indent = None
+                para.paragraph_format.left_indent = Pt(0)
+                para.paragraph_format.page_break_before = True
+                para.paragraph_format.space_before = Pt(0)
+                para.paragraph_format.space_after = Pt(0)
                 self._format_heading(para, 1)
 
-                # 查找并格式化附件的标题和副标题
-                search_idx = block_idx + 1
-                
-                # 查找附件的标题和副标题
-                att_title_indices, att_subtitle_indices = self._find_title_and_subtitle_paragraphs(doc, is_from_txt, search_idx)
-                
-                # 将附件的标题和副标题加入已处理集合
-                for idx in att_title_indices:
-                    processed_indices.add(idx)
-                for idx in att_subtitle_indices:
-                    processed_indices.add(idx)
-                
-                # 格式化附件的标题
-                if att_title_indices:
-                    self._log(f"  > 识别到附件标题（共 {len(att_title_indices)} 行）")
-                    for idx in att_title_indices:
-                        para_title = all_blocks[idx]
-                        self._log(f"    段落 {idx + 1}: 附件标题行 - \"{para_title.text.strip()[:30]}...\"")
-                        self._strip_leading_whitespace(para_title)
-                        self._apply_font_to_runs(para_title, self.config['title_font'], self.config['title_size'], set_color=apply_color)
-                        self._apply_bold_to_runs(para_title, self.config.get('title_bold', False))
-                        para_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        para_title.paragraph_format.first_line_indent = None
-                        
-                        # 设置标题行间距
-                        spacing = para_title._p.get_or_add_pPr().get_or_add_spacing()
-                        spacing.set(qn('w:beforeAutospacing'), '0')
-                        spacing.set(qn('w:afterAutospacing'), '0')
-                        para_title.paragraph_format.space_before = Pt(0)
-                        para_title.paragraph_format.space_after = Pt(0)
-                        self._apply_line_spacing(
-                            para_title,
-                            'title_line_spacing',
-                            'title_line_spacing_unit',
-                            'title_line_spacing_multiple',
-                            33,
-                        )
-                        
-                        self._reset_pagination_properties(para_title)
-                        self._format_heading(para_title, 1)
-                
-                # 格式化附件的副标题
-                if att_subtitle_indices:
-                    self._log(f"  > 识别到附件副标题（共 {len(att_subtitle_indices)} 行）")
-                    for idx in att_subtitle_indices:
-                        para_subtitle = all_blocks[idx]
-                        self._log(f"    段落 {idx + 1}: 附件副标题行 - \"{para_subtitle.text.strip()[:30]}...\"")
-                        self._strip_leading_whitespace(para_subtitle)
-                        self._apply_font_to_runs(para_subtitle, self.config['subtitle_font'], self.config['subtitle_size'], set_color=apply_color)
-                        para_subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                        para_subtitle.paragraph_format.first_line_indent = None
-                        
-                        # 设置副标题行间距
-                        spacing = para_subtitle._p.get_or_add_pPr().get_or_add_spacing()
-                        spacing.set(qn('w:beforeAutospacing'), '0')
-                        spacing.set(qn('w:afterAutospacing'), '0')
-                        para_subtitle.paragraph_format.space_before = Pt(0)
-                        para_subtitle.paragraph_format.space_after = Pt(0)
-                        self._apply_line_spacing(
-                            para_subtitle,
-                            'subtitle_line_spacing',
-                            'subtitle_line_spacing_unit',
-                            'subtitle_line_spacing_multiple',
-                            33,
-                        )
-                        
-                        self._reset_pagination_properties(para_subtitle)
-                
-                # 计算下一个要处理的块索引。没有附件标题/副标题时，
-                # 只跳过附件标识本段，避免漏处理紧随其后的正文段落。
-                handled_indices = att_title_indices + att_subtitle_indices
-                if handled_indices:
-                    next_idx = max(handled_indices) + 1
+                if title_text:
+                    new_p = OxmlElement("w:p")
+                    para._p.addnext(new_p)
+                    new_title_para = Paragraph(new_p, para._parent)
+                    
+                    title_run = new_title_para.add_run(title_text)
+                    self._set_run_font(title_run, self.config['title_font'], self.config['title_size'], set_color=apply_color)
+                    if self.config.get('title_bold', False):
+                        title_run.font.bold = True
+                    new_title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                    new_title_para.paragraph_format.first_line_indent = None
+                    new_title_para.paragraph_format.space_before = Pt(0)
+                    new_title_para.paragraph_format.space_after = Pt(0)
+                    
+                    spacing = new_title_para._p.get_or_add_pPr().get_or_add_spacing()
+                    spacing.set(qn('w:beforeAutospacing'), '0')
+                    spacing.set(qn('w:afterAutospacing'), '0')
+                    self._apply_line_spacing(
+                        new_title_para,
+                        'title_line_spacing',
+                        'title_line_spacing_unit',
+                        'title_line_spacing_multiple',
+                        33,
+                    )
+                    self._reset_pagination_properties(new_title_para)
+
                 else:
-                    next_idx = block_idx + 1
+                    search_idx = block_idx + 1
+                    while search_idx < len(all_blocks):
+                        next_block = all_blocks[search_idx]
+                        if isinstance(next_block, Paragraph) and next_block.text.strip():
+                            next_para = next_block
+                            self._strip_leading_whitespace(next_para)
+                            self._apply_font_to_runs(next_para, self.config['title_font'], self.config['title_size'], set_color=apply_color)
+                            next_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                            next_para.paragraph_format.first_line_indent = None
+                            if self.config.get('title_bold', False):
+                                self._apply_bold_to_runs(next_para, True)
+                            
+                            next_para.paragraph_format.space_before = Pt(0)
+                            next_para.paragraph_format.space_after = Pt(0)
+                            spacing = next_para._p.get_or_add_pPr().get_or_add_spacing()
+                            spacing.set(qn('w:beforeAutospacing'), '0')
+                            spacing.set(qn('w:afterAutospacing'), '0')
+                            self._apply_line_spacing(
+                                next_para,
+                                'title_line_spacing',
+                                'title_line_spacing_unit',
+                                'title_line_spacing_multiple',
+                                33,
+                            )
+                            self._reset_pagination_properties(next_para)
+
+                            processed_indices.add(search_idx)
+                            break
+                        search_idx += 1
                 
-                block_idx = next_idx
+                block_idx += 1
                 continue
-            
+
+            elif RE_CHAPTER.match(text_to_check):
+                self._log(f"段落 {current_block_num}: 识别为副标题（第X章） - \"{para_text_preview}...\"")
+                self._strip_leading_whitespace(para)
+                self._apply_font_to_runs(para, self.config['subtitle_font'], self.config['subtitle_size'], set_color=apply_color)
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                para.paragraph_format.first_line_indent = None
+                
+                spacing = para._p.get_or_add_pPr().get_or_add_spacing()
+                spacing.set(qn('w:beforeAutospacing'), '0')
+                spacing.set(qn('w:afterAutospacing'), '0')
+                para.paragraph_format.space_before = Pt(0)
+                para.paragraph_format.space_after = Pt(0)
+                self._apply_line_spacing(
+                    para,
+                    'subtitle_line_spacing',
+                    'subtitle_line_spacing_unit',
+                    'subtitle_line_spacing_multiple',
+                    33,
+                )
+                self._reset_pagination_properties(para)
+
             elif RE_HEADING_H1.match(text_to_check):
                 self._log(f"段落 {current_block_num}: 一级标题 - \"{para_text_preview}...\"")
                 self._strip_leading_whitespace(para)
@@ -1904,6 +2057,73 @@ class WordProcessor:
                 self._apply_bold_to_runs(para, self.config.get('h1_bold', False))
                 self._apply_text_indent_and_align(para)
                 self._reset_pagination_properties(para)
+
+            elif RE_ARTICLE.match(text_to_check):
+                self._log(f"段落 {current_block_num}: 条款标题 - \"{para_text_preview}...\"")
+                self._strip_leading_whitespace(para)
+                
+                match = RE_ARTICLE.match(para.text)
+                title_len = match.end() if match else 0
+                
+                if title_len < len(para.text.rstrip()):
+                    self._log("  > 检测到“第X条”与正文在同一段落，仅将“第X条”格式化为标题字体。")
+                    
+                    original_runs = []
+                    for r in para.runs:
+                        original_runs.append({
+                            'text': r.text, 'bold': r.bold, 'italic': r.italic,
+                            'underline': r.underline, 'font_color': r.font.color.rgb
+                        })
+                    
+                    para.clear()
+
+                    char_count = 0
+                    for run_info in original_runs:
+                        run_text = run_info['text']
+                        run_end_pos = char_count + len(run_text)
+                        
+                        title_run, body_run, new_run = None, None, None
+
+                        if run_end_pos <= title_len:
+                            new_run = para.add_run(run_text)
+                            self._set_run_font(new_run, self.config['h2_font'], self.config['h2_size'], set_color=apply_color)
+                        
+                        elif char_count >= title_len:
+                            new_run = para.add_run(run_text)
+                            self._set_run_font(new_run, self.config['body_font'], self.config['body_size'], set_color=apply_color)
+                        
+                        else:
+                            split_index = title_len - char_count
+                            title_part = run_text[:split_index]
+                            body_part = run_text[split_index:]
+                            
+                            if title_part:
+                                title_run = para.add_run(title_part)
+                                self._set_run_font(title_run, self.config['h2_font'], self.config['h2_size'], set_color=apply_color)
+                            if body_part:
+                                body_run = para.add_run(body_part)
+                                self._set_run_font(body_run, self.config['body_font'], self.config['body_size'], set_color=apply_color)
+
+                        runs_to_format = [r for r in [title_run, body_run] if r] or ([new_run] if new_run else [])
+                        for r in runs_to_format:
+                            if r:
+                                r.bold = run_info['bold']; r.italic = run_info['italic']
+                                r.underline = run_info['underline']
+                                if run_info['font_color']: r.font.color.rgb = run_info['font_color']
+
+                        char_count = run_end_pos
+
+                    self._format_heading(para, 2)
+                    self._apply_bold_to_first_chars(para, title_len, self.config.get('h2_bold', False))
+                    self._apply_text_indent_and_align(para)
+                    self._reset_pagination_properties(para)
+
+                else:
+                    self._format_heading(para, 2)
+                    self._apply_font_to_runs(para, self.config['h2_font'], self.config['h2_size'], set_color=apply_color)
+                    self._apply_bold_to_runs(para, self.config.get('h2_bold', False))
+                    self._apply_text_indent_and_align(para)
+                    self._reset_pagination_properties(para)
 
             elif RE_HEADING_H2.match(text_to_check):
                 self._log(f"段落 {current_block_num}: 二级标题 - \"{para_text_preview}...\"")
@@ -2023,8 +2243,15 @@ class WordProcessor:
                 self._reset_pagination_properties(para)
             
             block_idx += 1
-        
+            
+        self._format_signature(doc)        
         self._format_tables(doc, apply_color=apply_color)
+        self._clean_blank_pages(doc)  
+        
+        title_paras = [all_blocks[i] for i in title_indices]
+        self._ensure_blank_line_after_title(doc, title_paras)
+        self._ensure_blank_line_after_attachment_title(doc)
+        
         self._apply_page_setup(doc, is_from_txt=is_from_txt)
         self._log("正在保存最终文档...")
         doc.save(output_path)

@@ -16,10 +16,13 @@ DEFAULT_CONFIG = {
     'title_font': '方正小标宋简体', 'h1_font': '黑体', 'h2_font': '楷体_GB2312',
     'body_font': '仿宋_GB2312', 'page_number_font': '宋体',
     'table_caption_font': '黑体', 'figure_caption_font': '黑体', 'attachment_font': '黑体',
-    'subtitle_font': '楷体_GB2312',
+    'subtitle_font': '黑体',
     'title_size': 22, 'h1_size': 16, 'h2_size': 16, 'body_size': 16, 'page_number_size': 14,
     'table_caption_size': 14, 'figure_caption_size': 14, 'attachment_size': 16,
-    'subtitle_size': 16, 'title_line_spacing': 33, 'subtitle_line_spacing': 33,
+    'subtitle_size': 16, 'title_line_spacing': 33, 'subtitle_line_spacing': 33, 
+    'signature_spacing': 2,
+    'signature_space_lines': 0,      # 落款段前：按正文行数
+    'signature_space_pt': 0.0,       # 落款段前：直接磅值，优先级更高
     'line_spacing_unit': 'pt', 'line_spacing_multiple': 1.0,
     'title_line_spacing_unit': 'pt', 'title_line_spacing_multiple': 1.0,
     'subtitle_line_spacing_unit': 'pt', 'subtitle_line_spacing_multiple': 1.0,
@@ -28,6 +31,7 @@ DEFAULT_CONFIG = {
     'left_indent_chars': 0.0, 'right_indent_chars': 0.0, 'first_line_indent_chars': 2.0,
     'title_bold': False, 'h1_bold': False, 'h2_bold': False,
     'set_outline': True, 'enable_attachment_formatting': True,
+    'attachment_bold': False,
     'force_a4': False, 'use_custom_english_font': False, 'english_font': 'Times New Roman',
     'blank_line_mode': DEFAULT_BLANK_LINE_MODE, 'normalize_punctuation': False,
     'enable_table_formatting': False, 'table_header_font': '仿宋_GB2312',
@@ -36,6 +40,8 @@ DEFAULT_CONFIG = {
     'table_row_height_cm': 0.7, 'table_auto_col_width': True, 'table_width_percent': 100,
     'table_header_bold': True, 'table_smart_align': False,
     'table_unified_borders': True, 'table_border_size_pt': 0.5,
+    'table_preserve_borders': False, # 新增：是否保留原表格边框与底纹
+    'output_dir': '',                # 新增：记忆上一次的输出目录
 }
 
 PRESET_FONT_OPTIONS = {

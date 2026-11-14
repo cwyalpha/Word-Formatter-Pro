@@ -13,12 +13,14 @@ from pathlib import Path
 from wfp_config import DEFAULT_CONFIG, FONT_SIZE_MAP
 from wfp_core import (
     BLANK_LINE_MODE_OPTIONS,
+    LEGACY_FORMAT_KEYS,
     LegacyConversionUnavailable,
     SUPPORTED_FILE_EXTENSIONS,
     WordProcessor,
     WPSAppManager,
     _initialize_com_for_thread,
     _uninitialize_com_for_thread,
+    normalize_format_options,
 )
 from wfp_version import __version__
 
@@ -87,17 +89,34 @@ CONFIG_DESCRIPTIONS = {
     "subtitle_line_spacing": ("副标题行距", "磅；subtitle_line_spacing_unit=pt 时使用"),
     "subtitle_line_spacing_unit": ("副标题行距单位", "pt / multiple；默认 pt"),
     "subtitle_line_spacing_multiple": ("副标题行距倍数", "subtitle_line_spacing_unit=multiple 时使用，默认 1.0"),
+    "enable_title_after_blank_line": ("标题后空一行", "true/false，默认 false；已有空行不重复添加，与段落间距互斥"),
+    "enable_title_after_spacing": ("设置标题后段落间距", "true/false，默认 false；只作用于主文标题组末尾"),
+    "title_after_spacing": ("标题后间距", "非负数；不插入或删除空段落"),
+    "title_after_spacing_unit": ("标题后间距单位", "pt / lines，磅 / 行"),
+    "enable_attachment_title_after_blank_line": ("附件标题后空一行", "true/false，默认 false；仅附件正文，已有空行不重复添加"),
+    "enable_attachment_title_after_spacing": ("设置附件标题后段落间距", "true/false，默认 false；附件清单不应用"),
+    "attachment_title_after_spacing": ("附件标题后间距", "非负数；只作用于附件标题组末尾"),
+    "attachment_title_after_spacing_unit": ("附件标题后间距单位", "pt / lines，磅 / 行"),
+    "enable_signature_formatting": ("启用落款格式化", "true/false，默认 false；仅确认的单一机关署名与日期"),
+    "signature_layout": ("落款排法", "sealed / unsealed；盖章公文文字布局 / 不盖章布局，不添加或移动印章"),
+    "signature_include_attachments": ("同时处理附件正文落款", "true/false，默认 false；仅已确认附件正文"),
+    "signature_normalize_date": ("规范落款日期文字", "true/false，默认 false；有效日期转完整阿拉伯数字年月日，月日不补零"),
+    "signature_before_spacing_mode": ("落款段前间距模式", "auto / preserve / custom；按模式 / 保持原间距 / 自定义"),
+    "signature_before_spacing": ("落款自定义段前间距", "非负数，custom 时生效；不增删空段落"),
+    "signature_before_spacing_unit": ("落款段前间距单位", "pt / lines；Word 段落行单位，与国标一行30磅不同"),
     "left_indent_cm": ("段落左缩进", "厘米；paragraph_indent_unit=cm 时使用"),
     "right_indent_cm": ("段落右缩进", "厘米；paragraph_indent_unit=cm 时使用"),
     "paragraph_indent_unit": ("段落缩进单位", "cm / chars；默认 cm"),
     "left_indent_chars": ("段落左缩进", "字符；paragraph_indent_unit=chars 时使用"),
     "right_indent_chars": ("段落右缩进", "字符；paragraph_indent_unit=chars 时使用"),
     "first_line_indent_chars": ("首行缩进", "字符；默认 2"),
-    "title_bold": ("题目加粗", "true 时强制题目加粗"),
-    "h1_bold": ("一级标题加粗", "true 时强制一级标题加粗"),
-    "h2_bold": ("二级标题加粗", "true 时强制二级标题加粗"),
+    "title_bold": ("题目加粗", "preserve / bold / normal；保留原样 / 加粗 / 不加粗"),
+    "subtitle_bold": ("副标题加粗", "preserve / bold / normal"),
+    "h1_bold": ("一级标题加粗", "preserve / bold / normal；旧 true/false 对应 bold/preserve"),
+    "h2_bold": ("二级标题加粗", "preserve / bold / normal；只作用于标题部分"),
+    "attachment_bold": ("附件标识加粗", "preserve / bold / normal"),
     "set_outline": ("设置大纲级别", "true/false"),
-    "enable_attachment_formatting": ("附件格式化", "true/false"),
+    "enable_attachment_formatting": ("附件格式化", "true/false；区分清单与正文，正文才强制分页；含糊的同段条目按清单保留并提示"),
     "force_a4": ("强制 A4", "true/false"),
     "use_custom_english_font": ("单独设置数字和字母字体", "true/false"),
     "english_font": ("数字和字母字体", "默认 Times New Roman"),
@@ -113,9 +132,11 @@ CONFIG_DESCRIPTIONS = {
     "table_row_height_cm": ("表格行高", "厘米"),
     "table_auto_col_width": ("自动调整列宽", "true/false"),
     "table_width_percent": ("表格宽度", "百分比"),
-    "table_header_bold": ("表头加粗", "true/false"),
-    "table_smart_align": ("表格智能对齐", "true/false"),
-    "table_unified_borders": ("统一表格边框", "true/false"),
+    "table_header_bold": ("表头加粗", "preserve / bold / normal；默认 bold"),
+    "table_alignment": ("表格整体位置", "preserve / left / center / right"),
+    "table_cell_alignment": ("单元格文字对齐", "preserve / smart / left / center / right"),
+    "table_remove_text_wrapping": ("取消表格文字环绕", "true/false；默认 false"),
+    "table_border_mode": ("表格边框", "preserve / unified；底纹始终保留"),
     "table_border_size_pt": ("表格边框粗细", "pt"),
 }
 
@@ -166,7 +187,7 @@ def load_json_file(path):
 
 
 def normalize_config(config):
-    config = dict(config)
+    config = normalize_format_options(config)
     if "blank_line_mode" not in config and "remove_blank_lines" in config:
         config["blank_line_mode"] = WordProcessor._normalize_blank_line_mode(
             None,
@@ -187,23 +208,23 @@ def normalize_config(config):
 
 def load_config(config_path=None, config_json=None):
     source = "内置默认配置"
-    config = dict(DEFAULT_CONFIG)
+    config = {}
 
     if config_path:
         path = Path(config_path).expanduser().resolve()
-        config.update(load_json_file(path))
+        config.update(normalize_format_options(load_json_file(path)))
         source = str(path)
     else:
         cwd_config = Path.cwd() / CONFIG_FILE_NAME
         if cwd_config.exists():
-            config.update(load_json_file(cwd_config))
+            config.update(normalize_format_options(load_json_file(cwd_config)))
             source = str(cwd_config.resolve())
 
     if config_json:
         inline_config = json.loads(config_json)
         if not isinstance(inline_config, dict):
             raise ValueError("--config-json 必须是 JSON 对象")
-        config.update(inline_config)
+        config.update(normalize_format_options(inline_config))
         source += " + --config-json"
 
     return normalize_config(config), source
@@ -217,9 +238,9 @@ def apply_set_overrides(config, set_items):
             raise ValueError(f"--set 参数必须使用 key=value 形式: {item}")
         key, raw_value = item.split("=", 1)
         key = key.strip()
-        if key not in DEFAULT_CONFIG:
+        if key not in DEFAULT_CONFIG and key not in LEGACY_FORMAT_KEYS:
             raise KeyError(f"未知配置项: {key}")
-        config[key] = parse_value(raw_value)
+        config.update(normalize_format_options({key: parse_value(raw_value)}))
 
 
 def apply_convenience_overrides(config, args):
@@ -403,6 +424,12 @@ def show_config(args):
         "optional_features": [
             "convert_auto_numbering=true 非 Windows 识别自动编号并转换为文字（默认开启，含表格；不支持的编号保留并记录警告）",
             "enable_table_formatting=true 启用表格内容自动调整",
+            "title_bold / subtitle_bold / h1_bold / h2_bold / attachment_bold / table_header_bold 支持 preserve、bold、normal",
+            "table_alignment 设置表格位置，table_cell_alignment 独立设置单元格文字对齐（支持 smart 智能对齐）",
+            "table_border_mode=preserve 保留原边框及底纹；table_remove_text_wrapping=true 取消表格文字环绕",
+            "enable_title_after_blank_line=true 在主文标题组末尾空一行，已有空行不重复；附件用 enable_attachment_title_after_blank_line，均默认关闭",
+            "enable_title_after_spacing=true 改用段落间距；空行模式优先，切换间距时将 enable_title_after_blank_line=false",
+            "enable_signature_formatting=true 启用单一机关落款排版；signature_layout=sealed/unsealed，日期规范化及附件落款另设开关，默认关闭",
             "use_custom_english_font=true 并设置 english_font，可单独指定数字和字母字体，默认 Times New Roman",
             "normalize_punctuation=true 启用符号标准化",
         ],

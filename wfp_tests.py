@@ -4,6 +4,10 @@
 from __future__ import annotations
 
 import os
+import base64
+from io import BytesIO
+from zipfile import ZipFile
+from lxml.etree import tostring as xml_bytes
 import subprocess
 import tempfile
 import unittest
@@ -13,8 +17,12 @@ from pathlib import Path
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
+from docx.shared import Pt
 
 from wfp_config import DEFAULT_CONFIG
+from wfp_process import converter_profile_uri, owned_temp_dir, run_isolated
 from wfp_core import (
     BLANK_LINE_MODE_DELETE_SINGLE,
     BLANK_LINE_MODE_KEEP_SINGLE,
@@ -22,7 +30,356 @@ from wfp_core import (
     LegacyConversionUnavailable,
     SofficeConverter,
     WordProcessor,
+    BOLD_KEYS,
+    normalize_format_options,
 )
+
+
+class FormatOptionCompatibilityTests(unittest.TestCase):
+    def test_legacy_bold_and_table_switches_keep_their_meaning(self):
+        import wfp_cli
+        for enabled in (False, True):
+            legacy = {key: enabled for key in BOLD_KEYS}
+            legacy.update(table_smart_align=enabled, table_unified_borders=enabled)
+            config = wfp_cli.normalize_config(legacy)
+            self.assertEqual(config['title_bold'], 'bold' if enabled else 'preserve')
+            self.assertEqual(config['table_header_bold'], 'bold' if enabled else 'preserve')
+            self.assertEqual(config['table_cell_alignment'], 'smart' if enabled else 'preserve')
+            self.assertEqual(config['table_border_mode'], 'unified' if enabled else 'preserve')
+            self.assertNotIn('table_smart_align', config)
+            self.assertNotIn('table_unified_borders', config)
+            self.assertIs(legacy['title_bold'], enabled)
+
+    def test_explicit_modes_take_precedence_and_defaults_keep_kaiti(self):
+        import wfp_cli
+        config = wfp_cli.normalize_config({'table_cell_alignment': 'right', 'table_smart_align': True})
+        self.assertEqual(config['table_cell_alignment'], 'right')
+        self.assertEqual(config['subtitle_font'], '楷体_GB2312')
+        self.assertEqual(config['subtitle_bold'], 'preserve')
+        self.assertEqual(config['table_alignment'], 'preserve')
+        self.assertFalse(config['table_remove_text_wrapping'])
+        with self.assertRaises(ValueError):
+            normalize_format_options({'h2_bold': 'invalid'})
+
+    def test_cli_config_layers_and_old_set_aliases(self):
+        import json
+        import wfp_cli
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'config.json'
+            source.write_text(json.dumps({'table_cell_alignment': 'right', 'h2_bold': True}), encoding='utf-8')
+            config, _ = wfp_cli.load_config(source, '{"table_smart_align": true, "h2_bold": false}')
+            self.assertEqual(config['table_cell_alignment'], 'smart')
+            self.assertEqual(config['h2_bold'], 'preserve')
+            wfp_cli.apply_set_overrides(config, ['h2_bold=normal', 'table_unified_borders=false',
+                                                   'table_alignment=center', 'table_smart_align=false'])
+            self.assertEqual(config['h2_bold'], 'normal')
+            self.assertEqual(config['table_cell_alignment'], 'preserve')
+            self.assertEqual(config['table_border_mode'], 'preserve')
+            self.assertEqual(config['table_alignment'], 'center')
+
+
+class InlineFormattingProtectionTests(unittest.TestCase):
+    PIXEL = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=')
+
+    def processor(self, **options):
+        config = dict(DEFAULT_CONFIG)
+        config.update(options)
+        return WordProcessor(config)
+
+    @staticmethod
+    def hyperlink(para, text):
+        element = OxmlElement('w:hyperlink')
+        element.set(qn('r:id'), para.part.relate_to('https://example.com/target', RT.HYPERLINK, is_external=True))
+        run = OxmlElement('w:r')
+        node = OxmlElement('w:t')
+        node.text = text
+        run.append(node)
+        element.append(run)
+        para._p.append(element)
+        return element
+
+    def test_split_keeps_original_objects_relationships_and_full_run_properties(self):
+        doc = Document()
+        para = doc.add_paragraph()
+        start = OxmlElement('w:bookmarkStart')
+        start.set(qn('w:id'), '42')
+        start.set(qn('w:name'), 'kept_bookmark')
+        para._p.append(start)
+        link = self.hyperlink(para, '（一）标题。正文链接')
+        run = next(WordProcessor._iter_inline_runs(para))
+        run.italic = True
+        run.underline = True
+        run.font.superscript = True
+        run.font.bold = True
+        for name in ('commentRangeStart', 'commentRangeEnd', 'bookmarkEnd'):
+            marker = OxmlElement('w:' + name)
+            marker.set(qn('w:id'), '42')
+            para._p.append(marker)
+        field = para.add_run()
+        for name, value in (('fldChar', 'begin'), ('instrText', ' PAGE '),
+                            ('fldChar', 'separate'), ('t', '1'), ('fldChar', 'end')):
+            node = OxmlElement('w:' + name)
+            if name == 'fldChar':
+                node.set(qn('w:fldCharType'), value)
+            else:
+                node.text = value
+            field._r.append(node)
+        para.add_run().add_picture(BytesIO(self.PIXEL))
+        processor = self.processor(h2_bold='normal')
+        before_text = processor._paragraph_text(para)
+        protected = {tag: [xml_bytes(node) for node in para._p.iter(qn('w:' + tag))]
+                     for tag in ('drawing', 'fldChar', 'instrText', 'bookmarkStart',
+                                 'bookmarkEnd', 'commentRangeStart', 'commentRangeEnd')}
+        rels = dict(para.part.rels)
+        processor._format_inline_heading(para, len('（一）标题。'), True)
+        self.assertEqual(processor._paragraph_text(para), before_text)
+        self.assertIs(link.getparent(), para._p)
+        for tag, before in protected.items():
+            self.assertEqual([xml_bytes(node) for node in para._p.iter(qn('w:' + tag))], before)
+        self.assertEqual(dict(para.part.rels), rels)
+        runs = list(processor._iter_inline_runs(para))
+        self.assertEqual([processor._inline_run_text(r) for r in runs[:2]], ['（一）标题。', '正文链接'])
+        self.assertFalse(runs[0].bold)
+        self.assertTrue(runs[1].bold)
+        for run in runs[:2]:
+            self.assertTrue(run.italic)
+            self.assertTrue(run.underline)
+            self.assertTrue(run.font.superscript)
+        self.assertEqual(runs[0].font.name, DEFAULT_CONFIG['h2_font'])
+        self.assertEqual(runs[1].font.name, DEFAULT_CONFIG['body_font'])
+        count = len(runs)
+        processor._format_inline_heading(para, len('（一）标题。'), True)
+        self.assertEqual(len(list(processor._iter_inline_runs(para))), count)
+
+    def test_split_with_text_and_picture_in_one_run_does_not_duplicate_picture(self):
+        doc = Document()
+        para = doc.add_paragraph()
+        run = para.add_run('（一）标题。正文')
+        run.add_picture(BytesIO(self.PIXEL))
+        run.add_tab()
+        run.add_text('尾文')
+        run.add_break()
+        before = WordProcessor._paragraph_text(para)
+        self.processor()._format_inline_heading(para, len('（一）标题。'), False)
+        self.assertEqual(WordProcessor._paragraph_text(para), before)
+        self.assertEqual(len(list(para._p.iter(qn('w:drawing')))), 1)
+        self.assertEqual(len(list(para._p.iter(qn('w:tab')))), 1)
+        self.assertEqual(len(list(para._p.iter(qn('w:br')))), 1)
+
+    def test_trim_and_bracket_normalization_preserve_objects_in_same_run(self):
+        doc = Document()
+        para = doc.add_paragraph()
+        run = para.add_run('  (一)标题')
+        run.add_picture(BytesIO(self.PIXEL))
+        run.add_text('正文(保留)')
+        drawing = next(para._p.iter(qn('w:drawing')))
+        original = drawing.xml
+        processor = self.processor()
+        processor._strip_leading_whitespace(para)
+        processor._normalize_heading_brackets(para)
+        self.assertEqual(processor._paragraph_text(para), '（一）标题正文(保留)')
+        self.assertEqual(drawing.xml, original)
+
+    def test_bold_three_modes_override_inherited_style_and_preserve_body(self):
+        from docx.enum.style import WD_STYLE_TYPE
+        doc = Document()
+        style = doc.styles.add_style('Inherited bold', WD_STYLE_TYPE.CHARACTER)
+        style.font.bold = True
+        para = doc.add_paragraph('标题正文')
+        run = para.runs[0]
+        run.style = style
+        WordProcessor._apply_bold_to_first_chars(para, 2, 'normal')
+        self.assertEqual([r.text for r in para.runs], ['标题', '正文'])
+        self.assertIs(para.runs[0].bold, False)
+        self.assertIsNone(para.runs[1].bold)
+        WordProcessor._apply_bold_to_runs(para, 'preserve')
+        self.assertIs(para.runs[0].bold, False)
+        WordProcessor._apply_bold_to_runs(para, 'bold')
+        self.assertTrue(all(r.bold and r.font.cs_bold for r in para.runs))
+
+    def test_nested_textboxes_and_deleted_text_are_not_counted_twice(self):
+        doc = Document()
+        para = doc.add_paragraph('正文')
+        drawing = OxmlElement('w:pict')
+        textbox = OxmlElement('w:txbxContent')
+        inner = OxmlElement('w:p')
+        inner_run = OxmlElement('w:r')
+        inner_text = OxmlElement('w:t')
+        inner_text.text = '文本框文字'
+        inner_run.append(inner_text)
+        inner.append(inner_run)
+        textbox.append(inner)
+        drawing.append(textbox)
+        para.runs[0]._r.append(drawing)
+        deleted = OxmlElement('w:del')
+        deleted_run = OxmlElement('w:r')
+        deleted_text = OxmlElement('w:t')
+        deleted_text.text = '已删除'
+        deleted_run.append(deleted_text)
+        deleted.append(deleted_run)
+        para._p.append(deleted)
+        self.assertEqual(WordProcessor._paragraph_text(para), '正文')
+        self.assertEqual(len(list(WordProcessor._iter_inline_runs(para))), 1)
+
+    def test_end_to_end_preserves_picture_links_fields_and_source(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'source.docx'
+            output = Path(directory) / 'output.docx'
+            doc = Document()
+            para = doc.add_paragraph('（一）')
+            self.hyperlink(para, '标题。正文链接')
+            para.add_run().add_picture(BytesIO(self.PIXEL))
+            field = para.add_run()
+            for name, value in (('fldChar', 'begin'), ('instrText', ' PAGE '),
+                                ('fldChar', 'separate'), ('t', '1'), ('fldChar', 'end')):
+                node = OxmlElement('w:' + name)
+                if name == 'fldChar':
+                    node.set(qn('w:fldCharType'), value)
+                else:
+                    node.text = value
+                field._r.append(node)
+            doc.add_paragraph('（二）标题。普通正文').runs[0].bold = True
+            doc.save(source)
+            original = source.read_bytes()
+            processor = self.processor(h2_bold='normal')
+            try:
+                with patch.object(processor, '_com_available', return_value=False):
+                    processor.format_document(str(source), str(output))
+                formatted = Document(output)
+                self.assertEqual([processor._paragraph_text(p) for p in formatted.paragraphs],
+                                 ['（一）标题。正文链接1', '（二）标题。普通正文'])
+                self.assertEqual(len(list(formatted.element.iter(qn('w:drawing')))), 1)
+                self.assertEqual(len(list(formatted.element.iter(qn('w:hyperlink')))), 1)
+                # Check the original body field separately from generated footer fields.
+                self.assertEqual(len(list(formatted.element.body.iter(qn('w:fldChar')))), 3)
+                self.assertEqual(next(formatted.element.body.iter(qn('w:instrText'))).text, ' PAGE ')
+                self.assertFalse(formatted.paragraphs[1].runs[0].bold)
+                self.assertTrue(formatted.paragraphs[1].runs[1].bold)
+                with ZipFile(source) as before, ZipFile(output) as after:
+                    for name in before.namelist():
+                        if name.startswith('word/media/'):
+                            self.assertEqual(before.read(name), after.read(name))
+                self.assertEqual(source.read_bytes(), original)
+                repeated = Path(directory) / 'repeated.docx'
+                with patch.object(processor, '_com_available', return_value=False):
+                    processor.format_document(str(output), str(repeated))
+                repeated_doc = Document(repeated)
+                self.assertEqual([processor._paragraph_text(p) for p in repeated_doc.paragraphs],
+                                 [processor._paragraph_text(p) for p in formatted.paragraphs])
+                self.assertEqual(len(list(repeated_doc.element.iter(qn('w:drawing')))), 1)
+                self.assertEqual(len(list(repeated_doc.element.iter(qn('w:hyperlink')))), 1)
+                self.assertEqual(len(list(repeated_doc.element.body.iter(qn('w:fldChar')))), 3)
+            finally:
+                processor._cleanup_temp_files()
+
+    def test_end_to_end_all_heading_bold_modes_include_subtitle_and_attachment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / 'headings.docx'
+            output = Path(directory) / 'headings-out.docx'
+            doc = Document()
+            for text, centered, size in (('主标题', True, 22), ('副标题', True, 16),
+                                         ('正文', False, 16), ('一、一级标题', False, 16),
+                                         ('（一）二级标题。正文保留加粗', False, 16),
+                                         ('附件1', False, 16), ('附件主标题', True, 22),
+                                         ('附件副标题', True, 16), ('附件正文', False, 16)):
+                para = doc.add_paragraph(text)
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER if centered else WD_ALIGN_PARAGRAPH.LEFT
+                para.runs[0].font.size = Pt(size)
+                para.runs[0].bold = True
+            doc.save(source)
+            for mode in ('normal', 'bold', 'preserve'):
+                processor = self.processor(**{key: mode for key in BOLD_KEYS})
+                try:
+                    with patch.object(processor, '_com_available', return_value=False):
+                        processor.format_document(str(source), str(output))
+                    paragraphs = Document(output).paragraphs
+                    for index in (0, 1, 3, 4, 5, 6, 7):
+                        self.assertEqual(paragraphs[index].runs[0].bold, mode != 'normal', (mode, index))
+                    self.assertTrue(paragraphs[2].runs[0].bold)
+                    self.assertTrue(paragraphs[4].runs[1].bold)
+                finally:
+                    processor._cleanup_temp_files()
+
+
+class TableFormattingOptionsTests(unittest.TestCase):
+    def make_table(self):
+        doc = Document()
+        table = doc.add_table(rows=2, cols=3)
+        for row, texts in zip(table.rows, (('序号', '金额', '说明'), ('1', '123.45', '需要保留的较长说明文字'))):
+            for cell, text in zip(row.cells, texts):
+                cell.text = text
+                cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        table.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        WordProcessor(DEFAULT_CONFIG)._set_table_indent(table, 240)
+        floating = OxmlElement('w:tblpPr')
+        floating.set(qn('w:tblpX'), '120')
+        table._tbl.tblPr.append(floating)
+        shade = OxmlElement('w:shd')
+        shade.set(qn('w:fill'), 'FFCC00')
+        table.cell(0, 0)._tc.get_or_add_tcPr().append(shade)
+        processor = WordProcessor(DEFAULT_CONFIG)
+        processor._set_table_borders(table, size_pt=2, color='FF0000')
+        processor._set_cell_borders(table.cell(0, 0), size_pt=2, color='FF0000')
+        return doc, table
+
+    def format(self, doc, **options):
+        config = {**DEFAULT_CONFIG, 'enable_table_formatting': True,
+                  'table_auto_col_width': False, **options}
+        WordProcessor(config)._format_tables(doc)
+
+    def test_table_position_is_independent_of_cell_alignment(self):
+        for mode, expected in (('left', WD_ALIGN_PARAGRAPH.LEFT),
+                               ('center', WD_ALIGN_PARAGRAPH.CENTER), ('right', WD_ALIGN_PARAGRAPH.RIGHT)):
+            doc, table = self.make_table()
+            self.format(doc, table_alignment=mode)
+            self.assertEqual(table.alignment, expected)
+            self.assertEqual(table._tbl.tblPr.find(qn('w:tblInd')).get(qn('w:w')), '0')
+            self.assertEqual(table.cell(1, 2).paragraphs[0].alignment, WD_ALIGN_PARAGRAPH.JUSTIFY)
+            self.assertIsNotNone(table._tbl.tblPr.find(qn('w:tblpPr')))
+
+    def test_smart_and_explicit_cell_modes_preserve_table_position(self):
+        for mode, expected in (('left', WD_ALIGN_PARAGRAPH.LEFT),
+                               ('center', WD_ALIGN_PARAGRAPH.CENTER), ('right', WD_ALIGN_PARAGRAPH.RIGHT)):
+            doc, table = self.make_table()
+            self.format(doc, table_cell_alignment=mode)
+            self.assertEqual(table.alignment, WD_ALIGN_PARAGRAPH.RIGHT)
+            self.assertEqual(table._tbl.tblPr.find(qn('w:tblInd')).get(qn('w:w')), '240')
+            self.assertTrue(all(p.alignment == expected for row in table.rows for cell in row.cells for p in cell.paragraphs))
+        doc, table = self.make_table()
+        self.format(doc, table_cell_alignment='smart')
+        self.assertEqual(table.cell(1, 0).paragraphs[0].alignment, WD_ALIGN_PARAGRAPH.CENTER)
+        self.assertEqual(table.cell(1, 1).paragraphs[0].alignment, WD_ALIGN_PARAGRAPH.RIGHT)
+        self.assertEqual(table.cell(1, 2).paragraphs[0].alignment, WD_ALIGN_PARAGRAPH.LEFT)
+
+    def test_border_modes_keep_shading_and_preserve_original_borders(self):
+        for mode in ('preserve', 'unified'):
+            doc, table = self.make_table()
+            before_table = xml_bytes(table._tbl.tblPr.find(qn('w:tblBorders')))
+            before_cell = xml_bytes(table.cell(0, 0)._tc.tcPr.find(qn('w:tcBorders')))
+            shade = xml_bytes(table.cell(0, 0)._tc.tcPr.find(qn('w:shd')))
+            self.format(doc, table_border_mode=mode)
+            self.assertEqual(xml_bytes(table.cell(0, 0)._tc.tcPr.find(qn('w:shd'))), shade)
+            if mode == 'preserve':
+                self.assertEqual(xml_bytes(table._tbl.tblPr.find(qn('w:tblBorders'))), before_table)
+                self.assertEqual(xml_bytes(table.cell(0, 0)._tc.tcPr.find(qn('w:tcBorders'))), before_cell)
+            else:
+                self.assertNotEqual(xml_bytes(table._tbl.tblPr.find(qn('w:tblBorders'))), before_table)
+
+    def test_wrapping_is_optional_and_disabled_table_formatting_is_untouched(self):
+        doc, table = self.make_table()
+        before = table._tbl.xml
+        WordProcessor({**DEFAULT_CONFIG, 'table_remove_text_wrapping': True})._format_tables(doc)
+        self.assertEqual(table._tbl.xml, before)
+        self.format(doc, table_remove_text_wrapping=True)
+        self.assertIsNone(table._tbl.tblPr.find(qn('w:tblpPr')))
+
+    def test_header_normal_clears_bold_without_affecting_body(self):
+        doc, table = self.make_table()
+        table.cell(0, 0).paragraphs[0].runs[0].bold = True
+        table.cell(1, 0).paragraphs[0].runs[0].bold = True
+        self.format(doc, table_header_bold='normal')
+        self.assertIs(table.cell(0, 0).paragraphs[0].runs[0].bold, False)
+        self.assertIs(table.cell(1, 0).paragraphs[0].runs[0].bold, True)
 
 
 class TextNormalizationTests(unittest.TestCase):
@@ -225,6 +582,16 @@ class SpacingAndIndentUnitTests(unittest.TestCase):
         self.assertEqual(len(para.runs), 2)
         self.assertEqual(para.text, "正文")
 
+    def test_strip_leading_tabs_preserves_following_field_nodes(self):
+        doc = Document()
+        para = doc.add_paragraph('\t\t  附件1')
+        field = OxmlElement('w:fldChar')
+        field.set(qn('w:fldCharType'), 'begin')
+        para.runs[0]._r.append(field)
+        WordProcessor({})._strip_leading_whitespace(para)
+        self.assertEqual(para.text, '附件1')
+        self.assertIs(field.getparent(), para.runs[0]._r)
+
 
 class TempAndConversionTests(unittest.TestCase):
     def test_temp_docx_path_uses_system_temp_and_safe_name(self):
@@ -294,7 +661,7 @@ class LegacyFormatTests(unittest.TestCase):
         if not converter.available:
             self.skipTest("LibreOffice soffice is not available")
 
-        with tempfile.TemporaryDirectory(prefix="wfp_legacy_doc_test_") as tmpdir:
+        with owned_temp_dir(prefix="wfp_legacy_doc_test_") as tmpdir:
             root = Path(tmpdir)
             docx_source = root / "legacy_source.docx"
             source_doc = Document()
@@ -306,36 +673,35 @@ class LegacyFormatTests(unittest.TestCase):
             legacy_dir.mkdir()
             profile = root / "lo_profile"
             profile.mkdir()
-            proc = subprocess.run(
+            proc = run_isolated(
                 [
                     converter.soffice_path,
                     "--headless",
-                    f"-env:UserInstallation={profile.as_uri()}",
+                    f"-env:UserInstallation={converter_profile_uri(profile)}",
                     "--convert-to",
                     "doc",
                     "--outdir",
                     str(legacy_dir),
                     str(docx_source),
                 ],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
                 timeout=120,
             )
             generated = sorted(legacy_dir.glob("*.doc"))
             if proc.returncode != 0 or not generated:
                 detail = (proc.stderr or proc.stdout or "LibreOffice did not generate a .doc file").strip()
-                self.skipTest(f"LibreOffice .doc export unavailable: {detail}")
+                self.fail(f"LibreOffice .doc export failed (exit {proc.returncode}, {converter.soffice_path}): {detail}")
 
             output = root / "legacy_formatted.docx"
             processor = WordProcessor(DEFAULT_CONFIG.copy(), soffice_path=converter.soffice_path)
             try:
-                processor.format_document(str(generated[0]), str(output))
+                with patch.object(processor, '_com_available', return_value=False):
+                    processor.format_document(str(generated[0]), str(output))
                 self.assertTrue(output.exists())
                 formatted = Document(output)
                 self.assertTrue(any(paragraph.text.strip() for paragraph in formatted.paragraphs))
             finally:
                 processor._cleanup_temp_files()
+                processor.quit_com_app()
 
 
 class EndToEndFormatTests(unittest.TestCase):
@@ -373,10 +739,17 @@ class EndToEndFormatTests(unittest.TestCase):
 
 
 def main(argv=None):
+    if argv:
+        suite = unittest.defaultTestLoader.loadTestsFromNames(argv)
+        return 0 if unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful() else 1
     suite = unittest.defaultTestLoader.loadTestsFromModule(__import__(__name__))
     import wfp_numbering_tests
     import wfp_numbering_integration_tests
-    for module in (wfp_numbering_tests, wfp_numbering_integration_tests):
+    import wfp_attachment_tests
+    import wfp_signature_tests
+    import wfp_safety_tests
+    import wfp_title_after_tests
+    for module in (wfp_numbering_tests, wfp_numbering_integration_tests, wfp_attachment_tests, wfp_signature_tests, wfp_safety_tests, wfp_title_after_tests):
         suite.addTests(unittest.defaultTestLoader.loadTestsFromModule(module))
     runner = unittest.TextTestRunner(verbosity=2)
     result = runner.run(suite)

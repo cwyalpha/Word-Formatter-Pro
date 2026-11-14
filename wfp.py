@@ -8,6 +8,9 @@ from wfp_version import __version__
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] == '--test-process-worker':
+        from wfp_safety_tests import worker_main
+        return worker_main(argv[1:])
     if argv and argv[0] == "--test":
         from wfp_tests import main as test_main
 

@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 from pathlib import Path
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -109,56 +111,108 @@ def ensure_tk_available(py: Path) -> None:
         ) from exc
 
 
-def windows_tcl_tk_build_env(py: Path) -> dict[str, str]:
-    base_prefix = Path(python_stdout(py, "import sys; print(sys.base_prefix)"))
-    patchlevel = python_stdout(
-        py,
-        "import tkinter; print(tkinter.Tcl().eval('info patchlevel'))",
-    )
-    version_dir = ".".join(patchlevel.split(".")[:2])
-    candidates = [
-        (
-            base_prefix / "lib" / f"tcl{version_dir}",
-            base_prefix / "lib" / f"tk{version_dir}",
-        ),
-        (
-            base_prefix / "tcl" / f"tcl{version_dir}",
-            base_prefix / "tcl" / f"tk{version_dir}",
-        ),
-        (
-            base_prefix / "Library" / "lib" / f"tcl{version_dir}",
-            base_prefix / "Library" / "lib" / f"tk{version_dir}",
-        ),
-    ]
-    for tcl_library, tk_library in candidates:
-        init_tcl = tcl_library / "init.tcl"
-        tk_tcl = tk_library / "tk.tcl"
-        if not init_tcl.exists() or not tk_tcl.exists():
-            continue
-        init_text = init_tcl.read_text(encoding="utf-8", errors="ignore")
-        tk_text = tk_tcl.read_text(encoding="utf-8", errors="ignore")
-        tcl_matches = any(
-            "package require -exact Tcl" in line and patchlevel in line
-            for line in init_text.splitlines()
-        )
-        tk_matches = any(
-            "package require -exact Tk" in line and patchlevel in line
-            for line in tk_text.splitlines()
-        )
-        if tcl_matches and tk_matches:
-            env = os.environ.copy()
-            env["TCL_LIBRARY"] = str(tcl_library)
-            env["TK_LIBRARY"] = str(tk_library)
-            print(
-                f"Windows Tcl/Tk build data: {patchlevel} "
-                f"({tcl_library}, {tk_library})"
-            )
-            return env
+def windows_tcl_tk_runtime(py: Path) -> dict:
+    """Probe the DLLs actually loaded by this Python, not DLL search guesses."""
+    probe = textwrap.dedent('''
+        import ctypes, json, tkinter
+        from ctypes import wintypes as w
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel.GetModuleHandleW.argtypes = [w.LPCWSTR]
+        kernel.GetModuleHandleW.restype = w.HMODULE
+        kernel.GetModuleFileNameW.argtypes = [w.HMODULE, w.LPWSTR, w.DWORD]
+        kernel.GetModuleFileNameW.restype = w.DWORD
+        root = tkinter.Tk()
+        root.withdraw()
+        try:
+            result = {}
+            for name in ('tcl', 'tk'):
+                version = root.tk.eval('package provide ' + ('Tcl' if name == 'tcl' else 'Tk'))
+                digits = ''.join(version.split('.')[:2])
+                module = kernel.GetModuleHandleW(name + digits + 't.dll') or kernel.GetModuleHandleW(name + digits + '.dll')
+                buffer = ctypes.create_unicode_buffer(32768)
+                if not module or not kernel.GetModuleFileNameW(module, buffer, len(buffer)):
+                    raise RuntimeError('Cannot locate loaded ' + name + ' DLL')
+                result[name] = {'version': version, 'dll': buffer.value,
+                                'scripts': root.tk.eval('info library' if name == 'tcl' else 'set tk_library')}
+            print(json.dumps(result))
+        finally:
+            root.destroy()
+    ''')
+    runtime = json.loads(python_stdout(py, probe))
+    for name, filename, package in (('tcl', 'init.tcl', 'Tcl'), ('tk', 'tk.tcl', 'Tk')):
+        item = runtime[name]
+        script = Path(item['scripts']) / filename
+        if not Path(item['dll']).is_file() or not script.is_file():
+            raise SystemExit(f'Missing matching {name} runtime: {item}')
+        expected = r'package\s+require\s+-exact\s+' + package + r'\s+' + re.escape(item['version']) + r'(?:\s|$)'
+        if not re.search(expected, script.read_text(encoding='utf-8'), re.MULTILINE):
+            raise SystemExit(f'{script} does not match loaded {package} {item["version"]}')
+    print('Windows loaded Tcl/Tk: ' + json.dumps(runtime, ensure_ascii=False))
+    return runtime
 
-    raise SystemExit(
-        "Could not find Tcl/Tk script data matching the _tkinter runtime "
-        f"version {patchlevel} under {base_prefix}."
-    )
+
+def windows_tcl_tk_build_env(py: Path, runtime=None) -> dict[str, str]:
+    runtime = runtime or windows_tcl_tk_runtime(py)
+    env = os.environ.copy()
+    env['TCL_LIBRARY'] = runtime['tcl']['scripts']
+    env['TK_LIBRARY'] = runtime['tk']['scripts']
+    return env
+
+
+def windows_build_spec(py: Path, name: str, runtime: dict) -> Path:
+    """Replace Analysis entries explicitly: --add-binary alone can be shadowed."""
+    spec = BUILD_ROOT / 'windows' / 'spec' / (name + '.spec')
+    spec.parent.mkdir(parents=True, exist_ok=True)
+    script = f'''
+from pathlib import Path
+from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules
+runtime = {runtime!r}
+data, binaries, hidden = collect_all('tkinterdnd2')
+binaries += [(item['dll'], '.') for item in runtime.values()]
+data += collect_data_files('docx')
+data += [({str(module_file(py, 'docx.parts'))!r}, 'docx/parts')]
+hidden += ['wfp_numbering', 'wfp_signature'] + collect_submodules('fontTools.ttLib')
+a = Analysis([{str(ROOT / 'wfp.py')!r}], pathex=[{str(ROOT)!r}], binaries=binaries,
+             datas=data, hiddenimports=hidden, hookspath=[], runtime_hooks=[], excludes=[])
+dll_names = {{Path(item['dll']).name.lower() for item in runtime.values()}}
+a.binaries = [entry for entry in a.binaries if Path(entry[0]).name.lower() not in dll_names]
+for kind, item in runtime.items():
+    a.binaries.append((Path(item['dll']).name, item['dll'], 'BINARY'))
+    prefix = '_' + kind + '_data'
+    a.datas = [entry for entry in a.datas if entry[0].replace('\\\\', '/').split('/')[0] != prefix]
+    directory = Path(item['scripts'])
+    for path in sorted(directory.rglob('*')):
+        if path.is_file() and 'demos' not in path.relative_to(directory).parts:
+            a.datas.append((prefix + '/' + path.relative_to(directory).as_posix(), str(path), 'DATA'))
+pyz = PYZ(a.pure)
+exe = EXE(pyz, a.scripts, a.binaries, a.datas, [], name={name!r}, debug=False,
+          bootloader_ignore_signals=False, strip=False, upx=True, console=False,
+          disable_windowed_traceback=False)
+'''
+    spec.write_text(textwrap.dedent(script), encoding='utf-8')
+    return spec
+
+
+def validate_windows_archive(py: Path, binary: Path, runtime: dict) -> None:
+    probe = textwrap.dedent('''
+        import hashlib, json, sys
+        from pathlib import Path
+        from PyInstaller.archive.readers import CArchiveReader
+        archive = CArchiveReader(sys.argv[1])
+        runtime = json.loads(sys.argv[2])
+        for kind, item in runtime.items():
+            pairs = [(Path(item['dll']).name, Path(item['dll'])),
+                     ('_' + kind + '_data/' + ('init.tcl' if kind == 'tcl' else 'tk.tcl'),
+                      Path(item['scripts']) / ('init.tcl' if kind == 'tcl' else 'tk.tcl'))]
+            for name, original in pairs:
+                matches = [key for key in archive.toc if key.replace('\\\\', '/').lower() == name.lower()]
+                if len(matches) != 1:
+                    raise RuntimeError('Missing/duplicate runtime entry: ' + name)
+                if hashlib.sha256(archive.extract(matches[0])).digest() != hashlib.sha256(original.read_bytes()).digest():
+                    raise RuntimeError('Frozen runtime does not match loaded Python runtime: ' + name)
+        print('Frozen Tcl/Tk DLL and script hashes match the probed runtime.')
+    ''')
+    run([str(py), '-c', probe, str(binary), json.dumps(runtime)])
 
 
 def pyinstaller_base(py: Path, target: str) -> list[str]:
@@ -181,6 +235,10 @@ def pyinstaller_base(py: Path, target: str) -> list[str]:
         "docx",
         "--hidden-import",
         "wfp_numbering",
+        "--hidden-import",
+        "wfp_signature",
+        "--collect-submodules",
+        "fontTools.ttLib",
         "--add-data",
         f"{module_file(py, 'docx.parts')}{os.pathsep}docx/parts",
     ]
@@ -273,24 +331,23 @@ def build_macos(args: argparse.Namespace) -> Path:
 
 def build_windows(args: argparse.Namespace) -> Path:
     require_host("Windows", args.force)
-    py = prepare_clean_venv("windows", reuse=args.reuse_venv)
+    py = Path(args.python).resolve() if getattr(args, 'python', None) else prepare_clean_venv("windows", reuse=args.reuse_venv)
     ensure_tk_available(py)
-    build_env = windows_tcl_tk_build_env(py)
+    runtime = windows_tcl_tk_runtime(py)
+    build_env = windows_tcl_tk_build_env(py, runtime)
     exe_name = f"{APP_BINARY_BASENAME}.v{__version__}"
     dist_dir = BUILD_ROOT / "windows" / "dist"
+    spec = windows_build_spec(py, exe_name, runtime)
     run(
-        pyinstaller_base(py, "windows")
-        + [
-            "--onefile",
-            "--windowed",
-            "--name",
-            exe_name,
-            str(ROOT / "wfp.py"),
-        ],
+        [str(py), '-m', 'PyInstaller', '--noconfirm', '--clean',
+         '--distpath', str(dist_dir), '--workpath', str(BUILD_ROOT / 'windows' / 'work'), str(spec)],
         env=build_env,
     )
 
     built = dist_dir / f"{exe_name}.exe"
+    validate_windows_archive(py, built, runtime)
+    run([str(py), str(ROOT / 'packaging' / 'windows_gui_probe.py'), str(built), __version__], env=build_env)
+    (BUILD_ROOT / 'windows' / 'tcl-tk-runtime.json').write_text(json.dumps(runtime, indent=2), encoding='utf-8')
     artifact = RELEASE_DIR / f"{exe_name}.exe"
     RELEASE_DIR.mkdir(exist_ok=True)
     shutil.copy2(built, artifact)
@@ -441,6 +498,7 @@ def main(argv: list[str] | None = None) -> int:
 
     win = subparsers.add_parser("windows", help="Build Windows .exe on Windows.")
     add_build_options(win)
+    win.add_argument('--python', help='Use this existing Windows Python without installing or upgrading dependencies.')
     win.set_defaults(func=build_windows)
 
     def add_linux_build_options(build_parser: argparse.ArgumentParser) -> None:

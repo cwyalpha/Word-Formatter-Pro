@@ -1,5 +1,6 @@
 python-docx
 lxml>=5.2
+fonttools>=4.53,<5
 tkinterdnd2
 pywin32; platform_system == "Windows"
 
